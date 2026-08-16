@@ -22,11 +22,15 @@
 //! - [`session`] : one `users/authenticated` call, cached per process, so a
 //!   command that is about to write with the cookie finds out first that the
 //!   session is over.
+//! - [`universe`] : list a universe's places from the legacy `develop` host,
+//!   which is the only place that enumeration exists. Needs no credential, so
+//!   it works before a project has been configured.
 //! - [`api`] : Open Cloud HTTP client + retry + asset download.
 
 pub mod api;
 pub mod confirm;
 pub mod env;
+pub mod fs_name;
 pub mod generated;
 pub mod image;
 pub mod lockfile;
@@ -34,6 +38,7 @@ pub mod output;
 pub mod owner;
 pub mod places;
 pub mod session;
+pub mod universe;
 pub mod users;
 
 pub use env::{EnvTarget, GlobalFlags};
