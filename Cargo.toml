@@ -1,0 +1,41 @@
+[package]
+name = "rbx-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared infrastructure for the rbx toolkit: places resolution, env targets, Open Cloud HTTP client, auth"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+schemars = { workspace = true, optional = true }
+rbx_cookie.workspace = true
+blake3.workspace = true
+image.workspace = true
+bit-vec.workspace = true
+colored.workspace = true
+dialoguer.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
+# Adds to the workspace feature set, it does not replace it. `test-util` for
+# the paused-clock tests; "full" would have put fs/net/process back into the
+# unified graph for every `cargo test`, undoing the trim in the root manifest.
+tokio = { workspace = true, features = ["test-util"] }
+serde.workspace = true
+
+[features]
+# Adds `JsonSchema` to the config models. Off by default so `schemars` never
+# reaches the shipped binary; `rbx-schema` is the only thing that turns it on.
+schema = ["dep:schemars"]
+
+[lints]
+workspace = true
