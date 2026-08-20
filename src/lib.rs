@@ -38,6 +38,7 @@ pub mod output;
 pub mod owner;
 pub mod places;
 pub mod session;
+pub mod templates;
 pub mod universe;
 pub mod users;
 
