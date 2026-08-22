@@ -7,26 +7,26 @@
 //! character.
 //!
 //! That is not hypothetical. `rbx import` against a real universe stopped on a
-//! game pass called `Auto collect?` — a perfectly ordinary name, and a question
+//! game pass called `Auto collect?`: a perfectly ordinary name, and a question
 //! mark is common in pass names because they are usually questions. The import
 //! reported "shop skipped" and carried on, so the failure looked like a
 //! permissions problem rather than a filename one.
 //!
 //! **CI could not have caught it.** This workspace's CI is Linux-only, on
-//! purpose, to keep runner minutes affordable — and on Linux `?` is a legal
+//! purpose, to keep runner minutes affordable, and on Linux `?` is a legal
 //! filename character, so the same code path passes there and fails on the
 //! machine most Roblox developers use.
 
 /// A display name reduced to something safe as one path component.
 ///
-/// Keeps alphanumerics — Unicode-aware, so accented letters survive — plus
+/// Keeps alphanumerics (Unicode-aware, so accented letters survive) plus
 /// spaces, dashes and underscores, and trims the result. Everything else goes,
 /// which covers the Windows-illegal set without having to enumerate it and
 /// without inventing an escaping scheme nobody would be able to read back.
 ///
 /// Returns an empty string when nothing survives (a name that is entirely
-/// punctuation or emoji). Callers must have something to fall back on — an id,
-/// usually — rather than writing a file with no stem.
+/// punctuation or emoji). Callers must have something to fall back on (an id,
+/// usually) rather than writing a file with no stem.
 pub fn safe_component(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))

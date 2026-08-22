@@ -27,7 +27,7 @@ use reqwest::StatusCode;
 /// A non-success HTTP response from a Roblox API.
 ///
 /// Constructed by the retry layer when the response is not retryable, or when
-/// the retries are spent — so an `ApiError` carrying 429 means the rate limit
+/// the retries are spent, so an `ApiError` carrying 429 means the rate limit
 /// survived the whole backoff schedule, not that one request was throttled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiError {
@@ -72,7 +72,7 @@ impl std::error::Error for ApiError {}
 ///
 /// Walks the whole `anyhow` source chain rather than downcasting the outermost
 /// error, because by the time a caller inspects one it has usually collected a
-/// `.context()` or two on the way up — `rbx-ops ban` adds one before checking
+/// `.context()` or two on the way up: `rbx-ops ban` adds one before checking
 /// for 429. A direct downcast would see the context string and miss the
 /// `ApiError` underneath it.
 ///
@@ -125,8 +125,8 @@ pub fn is_api_status(error: &anyhow::Error, status: StatusCode) -> bool {
 /// exactly this purpose; `message` is the fallback, and some endpoints put it
 /// at the top level instead of inside `errors`.
 ///
-/// Returns `None` when the body is not that shape — an HTML error page, an
-/// empty body, a flat string — so the caller can fall back to showing it
+/// Returns `None` when the body is not that shape (an HTML error page, an
+/// empty body, a flat string) so the caller can fall back to showing it
 /// whole rather than swallowing it.
 ///
 /// ```
@@ -165,7 +165,7 @@ pub fn roblox_message(body: &str) -> Option<String> {
 /// [`roblox_message`] understands. Open Cloud proper returns a flatter shape
 /// and is constructed with [`ApiError::new`] directly.
 ///
-/// The status is kept either way — that is the whole point of the type — so a
+/// The status is kept either way (that is the whole point of the type) so a
 /// caller can still branch on 403 even though what it prints is prose.
 pub fn roblox_error(status: StatusCode, body: &str) -> anyhow::Error {
     let message = roblox_message(body).unwrap_or_else(|| body.to_string());

@@ -305,7 +305,7 @@ async fn connect_errors_are_retried_until_the_budget_is_exhausted() {
     // A connect error to a dead port is *transient*, so this is the giving-up
     // path, not the no-retry path: the budget is spent and then the error
     // bubbles. This used to be called `no_retry_on_non_transient_error`, which
-    // described the opposite of what it does — the two tests below cover the
+    // described the opposite of what it does: the two tests below cover the
     // case that name promised.
     let calls = Arc::new(AtomicU32::new(0));
     let calls_clone = calls.clone();
@@ -362,8 +362,8 @@ async fn a_reqwest_error_that_is_not_a_network_flake_is_not_retried() {
 
 #[tokio::test]
 async fn an_error_that_is_not_a_reqwest_error_at_all_is_not_retried() {
-    // The other half of the same rule: an opaque error from the closure — a
-    // missing credential, a config failure — carries no `reqwest::Error` to
+    // The other half of the same rule: an opaque error from the closure (a
+    // missing credential, a config failure) carries no `reqwest::Error` to
     // classify and so defaults to permanent.
     let calls = Arc::new(AtomicU32::new(0));
     let calls_clone = calls.clone();

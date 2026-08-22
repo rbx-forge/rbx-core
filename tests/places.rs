@@ -48,7 +48,7 @@ some_unknown_field = "x"
     // Loading must not fail: a key from a newer release has to stay readable,
     // or upgrading the file would mean upgrading every machine at once.
     assert_eq!(places.get("dev").unwrap().universe_id, 100);
-    // But it must not be silent either — that is the whole defect.
+    // But it must not be silent either: that is the whole defect.
     assert_eq!(places.unknown.len(), 1);
     assert_eq!(places.unknown[0].table, "dev");
     assert_eq!(places.unknown[0].key, "some_unknown_field");
@@ -72,7 +72,7 @@ fn a_key_the_binary_predates_is_reported_the_same_as_a_typo() {
 fn every_documented_env_key_is_accepted() {
     // The list is hand-maintained against three structs in three crates, so a
     // key that gains a field but not a list entry would warn on a correct
-    // file — noise that gets the warning ignored.
+    // file: noise that gets the warning ignored.
     let unknown = unknown_keys(
         r#"
 [owner]
@@ -149,8 +149,8 @@ fn nothing_unknown_produces_no_warning() {
 
 #[test]
 fn the_warning_names_the_key_the_table_and_what_the_table_accepts() {
-    // The wording is the whole point of the warning — an ignored key looks
-    // exactly like an honoured one from the outside — and it used to be
+    // The wording is the whole point of the warning (an ignored key looks
+    // exactly like an honoured one from the outside) and it used to be
     // unreachable from a test, sitting behind a process-global "warn once"
     // set that the first test to touch a path would mute for every later one.
     let unknown = unknown_keys("[prod]\nuniverse_id = 1\nconfrm = true\n");
@@ -291,7 +291,7 @@ confirm = true
 fn a_confirm_that_is_not_a_bool_fails_the_load_instead_of_reading_as_false() {
     // The reason `confirm` is a typed field and not a string read out of the
     // `_extra` map: quoting it is the mistake a YAML habit produces, and the
-    // old code answered it by silently disabling the prompt — on the env most
+    // old code answered it by silently disabling the prompt, on the env most
     // likely to be prod.
     let (_d, path) = write_places(
         r#"
@@ -424,7 +424,7 @@ universe_id = 200
 #[test]
 fn codegen_is_a_reserved_section_not_an_env() {
     // Without `codegen` declared as a known key, serde's flattened map would
-    // try to read this table as an env and fail on the missing universe_id —
+    // try to read this table as an env and fail on the missing universe_id:
     // breaking every command that touches rbxplace.toml, not just gen-module.
     let (_d, path) = write_places(
         r#"

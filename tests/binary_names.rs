@@ -3,7 +3,7 @@
 //! The suite used to be a set of standalone binaries: `rbxapikey`, `rbxconfig`,
 //! `rbxshop`, `rbxmeta`. They were folded into `rbx <subcommand>` before this
 //! repository existed, but about fifty user-facing strings kept telling people
-//! to run the old ones (#84) — remedy lines in `status`, usage lines in
+//! to run the old ones (#84): remedy lines in `status`, usage lines in
 //! `bail!`, and the header comments of the files `init` writes into the user's
 //! repository. Every one of them names a command that fails with "not found".
 //!
@@ -14,7 +14,7 @@
 //!
 //! # What the matcher recognises
 //!
-//! A retired binary name followed by a space and a lowercase letter — the shape
+//! A retired binary name followed by a space and a lowercase letter: the shape
 //! of `rbxapikey status`, `rbxconfig pull --env <name>`, `rbxshop sync`. That is
 //! how a command reads, and nothing else in this tree reads that way.
 //!
@@ -35,7 +35,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// This file's own name, skipped during the walk — it spells the retired names
+/// This file's own name, skipped during the walk: it spells the retired names
 /// out in its docs and its fixtures, which is the one place they belong.
 const SELF: &str = "binary_names.rs";
 
@@ -67,7 +67,7 @@ fn retired_names(root: &Path) -> Vec<String> {
 }
 
 /// Files whose text is checked: Rust sources under `crates/`, and the Markdown
-/// under `docs/`. `CHANGELOG.md` is left out on purpose — it records what the
+/// under `docs/`. `CHANGELOG.md` is left out on purpose: it records what the
 /// commands used to be called, which is history, not instruction.
 fn scanned_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -168,7 +168,7 @@ fn no_user_facing_string_names_a_binary_the_workspace_does_not_build() {
         offenders.is_empty(),
         "these tell the reader to run a binary that does not exist. The workspace ships two, \
          `rbx` and `rbx-ops`; the per-tool binaries were folded into subcommands. Write \
-         `rbx apikey status`, not `rbxapikey status`. File names are not affected — \
+         `rbx apikey status`, not `rbxapikey status`. File names are not affected: \
          `rbxapikey.toml` and its siblings are matched only when followed by a space and a \
          subcommand.\n\n{}",
         offenders.join("\n")

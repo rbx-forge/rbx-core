@@ -63,8 +63,8 @@ impl OutputFormat {
     /// Whether this invocation may stop and ask a question.
     ///
     /// Two conditions, and both have to hold. There has to be a human on the
-    /// other end — that is [`is_interactive`], the same test the pickers in
-    /// `rbx-ops ads` and `rbx shop pull` already apply — and stdout has to be
+    /// other end (that is [`is_interactive`], the same test the pickers in
+    /// `rbx-ops ads` and `rbx shop pull` already apply) and stdout has to be
     /// free, which it is not under `--json`.
     ///
     /// Callers that would have prompted use this to take their non-interactive

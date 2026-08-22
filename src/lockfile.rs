@@ -8,7 +8,7 @@
 //! 1. **Refuse anything newer than this build.** A lockfile written by a newer
 //!    `rbx` is not something we can safely guess at, and parsing it as the
 //!    current version would drop or misread state without saying so. The error
-//!    names both versions and points at the real fix — upgrade — rather than
+//!    names both versions and points at the real fix (upgrade) rather than
 //!    surfacing a parse failure the user cannot act on.
 //! 2. **Migrate older versions forward, one step at a time**, through
 //!    [`LockfileFormat::migrations`]. Registries are keyed `"N -> N+1"` and
@@ -19,7 +19,7 @@
 //! enforcement point has to exist *before* lockfiles are in the wild, because
 //! it is the part that cannot be retrofitted cheaply afterwards. This mirrors
 //! the project's own "an ignored key must not pass for applied" policy for
-//! `rbx env` (see `docs/env.md`) — a version we silently ignore is a version we
+//! `rbx env` (see `docs/env.md`): a version we silently ignore is a version we
 //! silently claim to have honoured.
 
 use std::path::Path;
@@ -30,7 +30,7 @@ use serde::de::DeserializeOwned;
 /// One step of a lockfile format migration.
 ///
 /// `apply` receives the whole document as a mutable [`toml::Value`], before it
-/// is deserialized into the concrete lockfile type — so a step is free to
+/// is deserialized into the concrete lockfile type, so a step is free to
 /// rename, reshape, or drop keys that the current struct no longer knows about.
 #[derive(Clone, Copy)]
 pub struct LockfileMigration {
@@ -94,7 +94,7 @@ pub struct LockfileFormat {
 impl LockfileFormat {
     /// Read, validate and migrate the lockfile at `path`.
     ///
-    /// Returns `Ok(None)` when the file does not exist — a first run is not an
+    /// Returns `Ok(None)` when the file does not exist: a first run is not an
     /// error, and each caller has its own idea of what an empty lockfile looks
     /// like.
     ///

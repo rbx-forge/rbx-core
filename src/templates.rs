@@ -1,4 +1,4 @@
-//! Studio's stock templates — the list behind the "New Experience" button.
+//! Studio's stock templates: the list behind the "New Experience" button.
 //!
 //! Roblox publishes no template API. What Studio offers is the public games of
 //! one account, `998796`, so that account's inventory *is* the list and it is

@@ -6,7 +6,7 @@
 //! first thing that noticed an expired session was Roblox, in the middle of an
 //! operation. `rbx meta sync` sends its Open Cloud patches before its
 //! cookie-only ones, which made a stale cookie leave the Open Cloud half
-//! applied and the legacy half not — an intermediate state that is real, and
+//! applied and the legacy half not: an intermediate state that is real, and
 //! on a live universe visible to players until somebody re-runs (#63).
 //!
 //! One `users/authenticated` call before the first cookie-bearing write turns
@@ -42,8 +42,8 @@ use crate::users::USERS_HOST;
 /// is no Studio to sign in to.
 pub const EXPIRED_SESSION: &str =
     "the Roblox session has expired: Roblox refused the .ROBLOSECURITY cookie, so nothing was \
-     applied. Renew it — sign in to Roblox Studio again, or pass a fresh --cookie / set \
-     RBX_COOKIE — then re-run.";
+     applied. Renew it (sign in to Roblox Studio again, or pass a fresh --cookie / set \
+     RBX_COOKIE) then re-run.";
 
 /// What `rbx` says when the cookie is present but empty.
 ///
@@ -111,7 +111,7 @@ impl Session {
 ///
 /// The one normalisation this toolkit applies to a cookie: Roblox wants the
 /// `.ROBLOSECURITY=` prefix, users paste the value with or without it. Shared
-/// so the check and the calls it vouches for send byte-identical headers —
+/// so the check and the calls it vouches for send byte-identical headers:
 /// validating one form and then sending another would vouch for nothing.
 pub fn cookie_header(raw: &str) -> String {
     if raw.starts_with(".ROBLOSECURITY=") {
@@ -190,7 +190,7 @@ async fn ask(client: &Client, cookie: &str, host: &str) -> Session {
     let status = response.status();
     // 401 is the only status that means "this session is over". Everything
     // else non-success is Roblox declining to answer the question for reasons
-    // of its own — a challenge, a rate limit, an outage — and none of those is
+    // of its own (a challenge, a rate limit, an outage) and none of those is
     // a reason to tell somebody to re-authenticate.
     if status == StatusCode::UNAUTHORIZED {
         return Session::Refused;
@@ -249,7 +249,7 @@ pub async fn known_account_with_host(cookie: &str, host: &str) -> Option<Session
 /// than claiming an identity nothing established.
 pub fn as_account(account: Option<&SessionAccount>, question: &str) -> String {
     match account {
-        Some(a) => format!("As {} — {}", a.label(), lower_first(question)),
+        Some(a) => format!("As {}: {}", a.label(), lower_first(question)),
         None => question.to_string(),
     }
 }
@@ -260,7 +260,7 @@ pub fn as_account(account: Option<&SessionAccount>, question: &str) -> String {
 /// Lowered only when the second character is itself lowercase, which is what
 /// an ordinary capitalised sentence looks like. `VIPPass will be created?`
 /// keeps its capital, because a question opening on a resource name or an
-/// acronym must survive untouched — misnaming the thing being confirmed is a
+/// acronym must survive untouched: misnaming the thing being confirmed is a
 /// worse outcome than a capital letter mid-sentence, and this text is read by
 /// somebody deciding whether to approve it.
 fn lower_first(s: &str) -> String {
@@ -377,7 +377,7 @@ mod tests {
         );
         assert_eq!(
             q,
-            "As builderman (156) — create universe 'My Game' under group 42?"
+            "As builderman (156): create universe 'My Game' under group 42?"
         );
     }
 
@@ -396,8 +396,8 @@ mod tests {
         // question opening on a name or an id must survive untouched, because
         // lowering those would misname the thing being confirmed.
         let a = account("builderman", 156);
-        assert!(as_account(Some(&a), "VIPPass will be created?").contains("— VIPPass"));
-        assert!(as_account(Some(&a), "1234 will be renamed?").contains("— 1234"));
+        assert!(as_account(Some(&a), "VIPPass will be created?").contains(": VIPPass"));
+        assert!(as_account(Some(&a), "1234 will be renamed?").contains(": 1234"));
     }
 
     #[tokio::test]

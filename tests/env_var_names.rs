@@ -3,7 +3,7 @@
 //! The suite used to be a set of standalone binaries, each with its own
 //! `RBX<TOOL>_API_KEY` / `RBX<TOOL>_COOKIE`. Merging them into one binary
 //! unified those to `RBX_API_KEY` and `RBX_COOKIE`, but eight error messages
-//! across five crates kept telling users to set the old names — variables
+//! across five crates kept telling users to set the old names: variables
 //! nothing reads any more. That failure is invisible from the inside: the user
 //! follows the instruction, exports `RBXMETA_COOKIE`, re-runs, gets the exact
 //! same error, and has nothing to go on.
@@ -18,8 +18,8 @@
 //! That is how every one of these names is written today, in an error message
 //! or a clap `env =` attribute.
 //!
-//! A name that is never contiguous in the source — `format!("RBX{tool}_COOKIE")`
-//! or a `concat!` — is invisible to it, and would reintroduce the exact bug
+//! A name that is never contiguous in the source: `format!("RBX{tool}_COOKIE")`
+//! or a `concat!`: is invisible to it, and would reintroduce the exact bug
 //! this file exists for while every test stayed green.
 //! [`no_environment_variable_name_is_assembled_at_runtime`] closes that door
 //! rather than trusting nobody opens it; the two guards below check that the
@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 /// Per-tool names that are still genuinely read somewhere, with the reason.
 ///
 /// `RBXAPIKEY_COOKIE` predates the merge and is still honoured, now as one of
-/// the explicit sources in `GlobalFlags::resolve_cookie` — it used to live in
+/// the explicit sources in `GlobalFlags::resolve_cookie`: it used to live in
 /// `rbx-apikey`'s own `resolve_cookie_from_env`, which is what let
 /// `--no-auto-cookie` be ignored (#20). Kept rather than dropped because
 /// removing a variable that works today would break whoever set it, and it
@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 /// leftover.
 const STILL_READ: &[&str] = &["RBXAPIKEY_COOKIE"];
 
-/// This file's own name, skipped during the walk — see the loop below.
+/// This file's own name, skipped during the walk: see the loop below.
 const SELF: &str = "env_var_names.rs";
 
 fn workspace_root() -> PathBuf {
@@ -70,7 +70,7 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Every `RBX<SOMETHING>_API_KEY` / `RBX<SOMETHING>_COOKIE` in `text`, where
-/// `<SOMETHING>` is non-empty — so the unified `RBX_API_KEY` and `RBX_COOKIE`
+/// `<SOMETHING>` is non-empty, so the unified `RBX_API_KEY` and `RBX_COOKIE`
 /// do not match and the per-tool survivors do.
 fn per_tool_names(text: &str) -> Vec<String> {
     let mut found = Vec::new();
@@ -103,7 +103,7 @@ fn no_source_file_names_a_retired_per_tool_environment_variable() {
 
     let mut offenders = Vec::new();
     for path in &sources {
-        // This file names the retired variables on purpose — in the module
+        // This file names the retired variables on purpose, in the module
         // docs that explain the bug, and in the matcher's own fixtures. It is
         // the one place they are allowed to appear.
         if path.file_name().is_some_and(|name| name == SELF) {
@@ -199,7 +199,7 @@ fn the_walk_reaches_every_crate_in_the_workspace() {
 /// A name assembled at runtime is a name this file cannot check.
 ///
 /// `format!("RBX{tool}_COOKIE")` is exactly how the per-tool variables would
-/// come back — one helper, every crate, and every assertion here still green
+/// come back: one helper, every crate, and every assertion here still green
 /// because no line contains the name. Refusing the shape is cheaper than
 /// teaching the matcher to evaluate Rust.
 #[test]
@@ -234,7 +234,7 @@ fn no_environment_variable_name_is_assembled_at_runtime() {
     assert!(
         offenders.is_empty(),
         "these build an environment variable name out of pieces, which makes it unverifiable \
-         by the check above — the name never appears in the source, so a retired one would \
+         by the check above: the name never appears in the source, so a retired one would \
          come back unnoticed. Write the name out in full.\n\n{}",
         offenders.join("\n")
     );

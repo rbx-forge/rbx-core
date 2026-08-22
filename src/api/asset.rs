@@ -23,7 +23,7 @@ pub async fn download_asset(client: &Client, api_key: &str, asset_id: u64) -> Re
 ///
 /// Only the *first* of the two requests is redirected. The second goes to
 /// whatever URL the delivery API answered with, which is a CDN host this code
-/// never chooses — pointing it somewhere would be inventing behaviour rather
+/// never chooses: pointing it somewhere would be inventing behaviour rather
 /// than exercising it. A test therefore answers with its own address and gets
 /// both halves on one server.
 pub async fn download_asset_from(

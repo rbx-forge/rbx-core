@@ -22,7 +22,7 @@ pub const DEFAULT_ENV: &str = "default";
 
 /// What the tool says the first time it uses a cookie nobody asked it to use.
 ///
-/// A `.ROBLOSECURITY` cookie is a full account credential — strictly more
+/// A `.ROBLOSECURITY` cookie is a full account credential: strictly more
 /// powerful than any scoped API key, and not revocable per-tool. Reading one
 /// out of a local Studio install is the right convenience for personal use and
 /// the wrong thing to do *silently* in a binary other people install: it is
@@ -43,7 +43,7 @@ pub const DEFAULT_ENV: &str = "default";
 /// two.
 /// Names the standing yes as well as the two refusals. The person reading this
 /// line has just answered a prompt, so they are the one for whom
-/// `--auto-cookie` exists — and this sentence is the only place they would
+/// `--auto-cookie` exists, and this sentence is the only place they would
 /// learn it does. Naming only the ways to refuse taught half the control.
 pub const AUTO_COOKIE_NOTICE: &str = "using the Roblox Studio cookie \
      (--auto-cookie to stop asking; --no-auto-cookie or RBX_COOKIE= to refuse)";
@@ -52,8 +52,8 @@ pub const AUTO_COOKIE_NOTICE: &str = "using the Roblox Studio cookie \
 ///
 /// Once, not per call: a single command can resolve the cookie two or three
 /// times while building clients, and a notice repeated three times reads like
-/// three separate reads of the credential. The same reasoning — and the same
-/// shape — as `places::warn_unknown_keys`.
+/// three separate reads of the credential. The same reasoning (and the same
+/// shape) as `places::warn_unknown_keys`.
 fn announce_auto_cookie() {
     static ANNOUNCED: std::sync::Once = std::sync::Once::new();
     ANNOUNCED.call_once(|| eprintln!("{AUTO_COOKIE_NOTICE}"));
@@ -83,8 +83,8 @@ const AUTO_COOKIE_PROMPT: &str =
 /// "Can hold a conversation" means all three streams are terminals. stdin is
 /// where the answer comes from and stderr is where the question is drawn, which
 /// is [`crate::output::is_interactive`]; stdout is added here because a
-/// redirected stdout is a run being captured — a `--json` document, a pipe into
-/// `jq` — and a prompt in front of that is a pipeline stalling on a question
+/// redirected stdout is a run being captured (a `--json` document, a pipe into
+/// `jq`) and a prompt in front of that is a pipeline stalling on a question
 /// nobody sees.
 fn auto_cookie_allowed(standing_yes: bool) -> bool {
     if standing_yes {
@@ -138,8 +138,8 @@ fn ask_yes_no(_question: &str) -> Option<bool> {
 /// merge into a single binary.
 ///
 /// It is read here rather than in `rbx-apikey` because this function is the
-/// single cookie-resolution chain, and the alternative — a per-crate fallback
-/// hung off this one's `None` — is exactly the shape that let
+/// single cookie-resolution chain, and the alternative (a per-crate fallback
+/// hung off this one's `None`) is exactly the shape that let
 /// `--no-auto-cookie` be ignored.
 ///
 /// Two consequences worth stating, both deliberate:
@@ -166,7 +166,7 @@ fn legacy_apikey_cookie() -> Option<String> {
 /// has.
 ///
 /// Without it, "`--no-auto-cookie` stops the lookup" is only assertable on a
-/// developer's machine with Studio signed in, and passes vacuously in CI — on
+/// developer's machine with Studio signed in, and passes vacuously in CI, on
 /// exactly the check that was broken. Same reasoning as the workspace's
 /// `#[cfg(test)] with_base_url` seams: the production path is unchanged and
 /// unconditional, the test build gets somewhere to stand.
@@ -258,7 +258,7 @@ pub struct GlobalFlags {
     /// Spelled `--universe-id` to match the per-subcommand flags it replaced.
     /// Those were separate arguments with the same meaning, and because this
     /// one is `global = true` clap accepted `--universe` everywhere while
-    /// `shop init` and friends read only their own — a flag with the right
+    /// `shop init` and friends read only their own: a flag with the right
     /// value, silently ignored. `--universe` stays as an alias so no existing
     /// invocation breaks.
     #[arg(long = "universe-id", alias = "universe", global = true)]
@@ -270,7 +270,7 @@ pub struct GlobalFlags {
     /// same reason: a command should work in a directory with no
     /// `rbxplace.toml`, against a place you have not configured or somebody
     /// else's game you are helping with. Without it, everything at place scope
-    /// was tied to the file even when a place id was all the call needed —
+    /// was tied to the file even when a place id was all the call needed:
     /// `rbx open` reads the file, then builds a URI out of one number.
     ///
     /// Wins over `--env` / `--place` when both are given, because passing an id
@@ -278,8 +278,8 @@ pub struct GlobalFlags {
     ///
     /// **It does not inherit `confirm = true`.** That guard lives on an env in
     /// `rbxplace.toml`, and naming a raw id resolves no env. Where the file is
-    /// present and maps this id, the env's `confirm` is honoured anyway — see
-    /// [`Self::confirm_for_place_id`] — so pointing at your own production
+    /// present and maps this id, the env's `confirm` is honoured anyway (see
+    /// [`Self::confirm_for_place_id`]) so pointing at your own production
     /// place by id still prompts. An id the file does not know is a place
     /// outside the project and prompts on nothing.
     /// Repeatable, because `rbx apikey can-manage` answers about several
@@ -322,7 +322,7 @@ impl GlobalFlags {
     /// So the found value is a candidate until something says yes:
     /// `--auto-cookie` is the standing yes, and an interactive run is asked
     /// once and remembers the answer for the process. A run with nowhere to
-    /// ask — CI, a pipe, a cron job — takes the safe branch and reports it,
+    /// ask (CI, a pipe, a cron job) takes the safe branch and reports it,
     /// which is what keeps a pipeline from reaching into whoever's session the
     /// runner happens to have.
     pub fn resolve_cookie(&self) -> Option<String> {
@@ -451,7 +451,7 @@ impl GlobalFlags {
     /// Whether a write to `--place-id` should still prompt.
     ///
     /// The `confirm = true` guard belongs to an env, and `--place-id` resolves
-    /// none — so on its own it would walk straight past a guard the file
+    /// none, so on its own it would walk straight past a guard the file
     /// author set on purpose. That is the wrong default for the case that
     /// actually happens: somebody points at their own production place by id
     /// because it was quicker than remembering the env name.
@@ -525,8 +525,8 @@ mod tests {
 
     /// Nothing set, so every test starts from the same place.
     fn clear_legacy_var() {
-        // SAFETY: every caller holds `env_lock`, and `tests/env.rs` — the only
-        // other place that touches these — is a separate process.
+        // SAFETY: every caller holds `env_lock`, and `tests/env.rs` (the only
+        // other place that touches these) is a separate process.
         unsafe { std::env::remove_var("RBXAPIKEY_COOKIE") };
     }
 
@@ -548,7 +548,7 @@ mod tests {
 
     /// `--auto-cookie`: the standing yes. A test binary's streams are not
     /// terminals, so this is the only way to reach the auto-detected path from
-    /// here — which is the behaviour under test, not a limitation of it.
+    /// here, which is the behaviour under test, not a limitation of it.
     fn consented() -> GlobalFlags {
         GlobalFlags {
             auto_cookie: true,
@@ -619,8 +619,8 @@ mod tests {
 
     /// #20. The flag has to stop the Studio lookup on a machine that has one to
     /// find, which is why the lookup is behind a seam: asserted against the
-    /// real `rbx_cookie`, this would pass in CI whether or not the flag worked
-    /// — on exactly the check that was broken.
+    /// real `rbx_cookie`, this would pass in CI whether or not the flag worked,
+    /// on exactly the check that was broken.
     #[test]
     fn no_auto_cookie_stops_the_studio_lookup() {
         let _guard = env_lock();
@@ -638,7 +638,7 @@ mod tests {
     /// from somewhere, the cookie found on the machine is not sent.
     ///
     /// The test binary's streams are not terminals, which is the same branch a
-    /// CI runner takes, so this asserts the property that matters most — a
+    /// CI runner takes, so this asserts the property that matters most: a
     /// pipeline cannot reach into whoever's session the runner happens to have.
     #[test]
     fn a_found_cookie_is_not_sent_without_consent() {

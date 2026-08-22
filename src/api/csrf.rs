@@ -1,7 +1,7 @@
 //! Roblox's CSRF dance, once.
 //!
-//! The legacy endpoints — the ones Open Cloud has no equivalent for, reached
-//! with a session cookie — answer the first state-changing request with `403`
+//! The legacy endpoints: the ones Open Cloud has no equivalent for, reached
+//! with a session cookie: answer the first state-changing request with `403`
 //! and an `x-csrf-token` header. The request has to be sent again with that
 //! token echoed back, and the token is then good for the rest of the session.
 //!
@@ -17,7 +17,7 @@
 //!
 //! What a caller keeps is the part that is genuinely theirs: the message a
 //! refusal turns into. That is why this returns [`Refusal`] rather than a
-//! formatted error — `rbx-meta` reads the raw body of a failed retry to spot
+//! formatted error: `rbx-meta` reads the raw body of a failed retry to spot
 //! beta-mode experiences, and that body is gone the moment an error is built
 //! from it.
 

@@ -91,7 +91,7 @@ pub const PLACES_FILE: &str = "rbxplace.toml";
 /// One rule for the whole suite, deliberately: `rbx import` and `rbx check`
 /// each grew their own answer, so the same `--dir` moved the implicit lookup
 /// for one command and not the other. The rule is that an explicit `--places`
-/// wins — a shared env file is often outside the working tree — and otherwise
+/// wins (a shared env file is often outside the working tree) and otherwise
 /// the file sits in `--dir`, alongside everything else the command reads or
 /// writes. A `--dir` that names a project directory names the whole project,
 /// `rbxplace.toml` included.
@@ -109,7 +109,7 @@ pub fn resolve_places_path(places: &Path, dir: &Path) -> PathBuf {
 
 /// A key this build of rbx gives no meaning to.
 ///
-/// Every reader of `rbxplace.toml` swallows unrecognised keys — it has to, or
+/// Every reader of `rbxplace.toml` swallows unrecognised keys: it has to, or
 /// each tool would reject the fields the others own. That is the right parsing
 /// rule and the wrong user experience: from the outside, a key that was
 /// ignored looks exactly like a key that was honoured. For a tool whose job is
@@ -149,7 +149,7 @@ fn collect_unknown(
 /// reserved tables are checked: `[<env>.places]` holds arbitrary place names,
 /// which are data and not keys.
 ///
-/// A document that does not parse yields nothing — the caller's typed parse
+/// A document that does not parse yields nothing: the caller's typed parse
 /// reports that failure, with a line number this cannot produce.
 pub fn unknown_keys(content: &str) -> Vec<UnknownKey> {
     let Ok(toml::Value::Table(root)) = content.parse::<toml::Value>() else {
@@ -167,7 +167,7 @@ pub fn unknown_keys(content: &str) -> Vec<UnknownKey> {
             env => {
                 collect_unknown(env, table, ENV_KEYS, &mut found);
                 // Inline (`owner = { type = "user", id = 42 }`) or a
-                // `[<env>.owner]` section — `as_table` covers both.
+                // `[<env>.owner]` section, `as_table` covers both.
                 if let Some(owner) = table.get("owner").and_then(|v| v.as_table()) {
                     collect_unknown(&format!("{env}.owner"), owner, OWNER_KEYS, &mut found);
                 }
@@ -182,7 +182,7 @@ pub fn unknown_keys(content: &str) -> Vec<UnknownKey> {
 ///
 /// Split out of [`warn_unknown_keys`] so the wording is reachable from a test.
 /// The reporting path deduplicates through process-global state, which by
-/// construction cannot be asserted on from a parallel test suite — the first
+/// construction cannot be asserted on from a parallel test suite: the first
 /// test to warn about a path silently mutes every later one. Keeping the
 /// formatting pure moves the part worth testing out of that shadow.
 pub fn unknown_keys_warning(path: &Path, unknown: &[UnknownKey]) -> Option<String> {
@@ -208,7 +208,7 @@ pub fn unknown_keys_warning(path: &Path, unknown: &[UnknownKey]) -> Option<Strin
     }
     out.push_str(
         "\nAn ignored key changes nothing. Either it is misspelled, or it comes from a\n\
-         release newer than this one — check the changelog for the version that\n\
+         release newer than this one: check the changelog for the version that\n\
          introduces it before assuming it took effect.",
     );
     Some(out)
@@ -219,12 +219,12 @@ pub fn unknown_keys_warning(path: &Path, unknown: &[UnknownKey]) -> Option<Strin
 /// mean upgrading every machine at the same instant.
 ///
 /// The once-per-path set is process-global, which `api/base.rs` argues against
-/// for the API host — and rightly, since a test asserting on the host needs
+/// for the API host, and rightly, since a test asserting on the host needs
 /// its own. This one stays global because its job *is* to be
 /// process-wide: a single command loads `rbxplace.toml` through rbx-core and
 /// again through the domain crate's narrower struct, and the user should read
 /// the same warning once, not twice. Scoping it to a loader would restore the
-/// duplicate it exists to remove. What the global was hiding — the wording —
+/// duplicate it exists to remove. What the global was hiding (the wording)
 /// now lives in [`unknown_keys_warning`], where a test can reach it.
 pub fn warn_unknown_keys(path: &Path, unknown: &[UnknownKey]) {
     let Some(message) = unknown_keys_warning(path, unknown) else {
@@ -266,7 +266,7 @@ fn describe_source(section: &str, resolved: &str) -> &'static str {
 /// Reserved `[codegen]` block: where `rbx env gen-module` writes its module.
 ///
 /// The path lives here rather than only in `--out` so the hook, the CI job and
-/// the developer cannot disagree about it — a `--check` pointed at a path
+/// the developer cannot disagree about it: a `--check` pointed at a path
 /// nobody generates passes green while verifying nothing.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -299,7 +299,7 @@ pub struct PlacesFile {
     /// already reported on stderr by [`PlacesFile::load`].
     ///
     /// Kept on the struct rather than only printed so `gen-module --check` can
-    /// say that an ignored key is a candidate cause of the mismatch — the
+    /// say that an ignored key is a candidate cause of the mismatch: the
     /// generic advice ("regenerate and commit") is wrong in exactly that case.
     #[serde(skip)]
     pub unknown: Vec<UnknownKey>,
@@ -341,7 +341,7 @@ pub struct Environment {
 
     /// Whether game code should see this env (default: `true`).
     ///
-    /// `false` marks an env that exists for tooling only — a universe you
+    /// `false` marks an env that exists for tooling only: a universe you
     /// upload to from CI and never ship. It stays a normal env everywhere
     /// else: `--env` resolves it, `--env all` includes it, `list` and `get`
     /// report it. It is only kept out of the generated modules, so adding one
@@ -359,7 +359,7 @@ pub struct Environment {
     /// `promote`. Defaults to `false`.
     //
     // Typed rather than read stringly out of `_extra`, because `confirm =
-    // "true"` — the spelling a YAML habit produces — used to parse happily and
+    // "true"` (the spelling a YAML habit produces) used to parse happily and
     // then silently disable the prompt on the env most likely to be prod. As a
     // field the wrong type is a load error naming the line, and the schema
     // says `boolean` in the editor before it ever gets that far.
@@ -373,7 +373,7 @@ pub struct Environment {
     /// env table, which is the whole point: an editor that red-flagged a key
     /// the tool merely warns about would be stricter than the tool, and a
     /// schema stricter than its tool is worse than no schema. `toml::Value`
-    /// has no `JsonSchema` impl and would be the wrong shape anyway — the
+    /// has no `JsonSchema` impl and would be the wrong shape anyway: the
     /// schema describes the JSON projection of the document.
     #[serde(flatten)]
     #[cfg_attr(
@@ -419,7 +419,7 @@ impl PlacesFile {
     ///
     /// The optional `env` field renames what game code matches on, so the name
     /// a section resolves to is `env` when set and the section name otherwise.
-    /// Two sections landing on the same name is not an alias — it is two envs
+    /// Two sections landing on the same name is not an alias: it is two envs
     /// with one name, and it silently breaks any lookup by name: the generated
     /// module ends up with two entries claiming to be the same env, and a
     /// consumer takes whichever comes first.
@@ -444,7 +444,7 @@ impl PlacesFile {
             bail!(
                 "{}: two envs resolve to the name '{}'\n  \
                  [{}]{}\n  [{}]{}\n\
-                 Env names must be unique — they are what game code matches on.",
+                 Env names must be unique: they are what game code matches on.",
                 path.display(),
                 resolved,
                 first,
@@ -469,7 +469,7 @@ impl PlacesFile {
         })
     }
 
-    /// Sorted names of the envs game code should see — everything except
+    /// Sorted names of the envs game code should see: everything except
     /// those marked `codegen = false`.
     ///
     /// Deliberately separate from [`env_names`](Self::env_names): `--env all`

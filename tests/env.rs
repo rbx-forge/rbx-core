@@ -155,7 +155,7 @@ fn resolve_place_uses_main_by_default() {
 /// must not send the session.
 ///
 /// A test binary's streams are not terminals, which is the same branch a CI
-/// runner takes, so this is the property that matters most — a pipeline cannot
+/// runner takes, so this is the property that matters most: a pipeline cannot
 /// reach into whoever's session the runner happens to have. On a machine with
 /// no Studio it passes for the boring reason, which is why the unit tests hold
 /// the other half behind a seam.

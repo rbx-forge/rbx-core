@@ -80,7 +80,7 @@ impl fmt::Display for ApiBase {
 ///
 /// Two things are checked, not one. The wording is Roblox's way of saying the
 /// key is underpowered, but the same words can appear in the body of a failure
-/// that has nothing to do with scopes — a 500 echoing an upstream message, for
+/// that has nothing to do with scopes: a 500 echoing an upstream message, for
 /// one. Advising somebody to re-issue their key because the server broke sends
 /// them off fixing what is not wrong, so the hint is withheld unless the status
 /// could actually mean "refused": a 4xx, or no HTTP status at all (the error

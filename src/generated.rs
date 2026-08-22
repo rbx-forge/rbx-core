@@ -3,7 +3,7 @@
 //! Every generator here follows the same contract: the output is a pure
 //! function of local, committed inputs (`rbxplace.toml` for `rbx env
 //! gen-module`, `rbxshop.toml` + `rbxshop.lock` for `rbx shop codegen`). That
-//! purity is what makes a `--check` mode meaningful — it can re-render in
+//! purity is what makes a `--check` mode meaningful: it can re-render in
 //! memory and assert the committed file still matches, with no network and no
 //! credentials, which is what makes it usable from a git hook or from CD.
 //!
@@ -13,7 +13,7 @@
 //!   rewrites the file (stylua, prettier) breaks it permanently, and no amount
 //!   of regenerating fixes that. Keeping formatters off the generated path is
 //!   the consuming project's call, not something the CLI arranges on its
-//!   behalf — so [`Verdict::Formatting`] exists to name that failure instead
+//!   behalf, so [`Verdict::Formatting`] exists to name that failure instead
 //!   of leaving it as a mystery diff.
 //! - **One code path.** Callers build [`GeneratedFile`]s once and then either
 //!   write them or check them. A verifier that re-describes what the generator
@@ -47,7 +47,7 @@ impl Drift {
     /// [`CheckReport::finish`] builds one of these for the generated-file
     /// checks. `rbx check` aggregates those alongside config-against-lockfile
     /// diffs, which produce the same verdict by a different route and have to
-    /// exit through the same code — otherwise "exit 2" would have two
+    /// exit through the same code: otherwise "exit 2" would have two
     /// definitions in the tree and only one of them would stay correct.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
@@ -93,7 +93,7 @@ impl GeneratedFile {
 }
 
 /// Where the first difference sits. `None` on a side means the file ended
-/// before that line. Both `None` only terminates the scan — a difference that
+/// before that line. Both `None` only terminates the scan: a difference that
 /// lives entirely past the last line is whitespace, so [`Verdict::Formatting`]
 /// claims it before we ever look for a line.
 #[derive(Debug)]
@@ -133,7 +133,7 @@ fn normalize(content: &str) -> String {
 }
 
 /// Collapse every whitespace run to a single space. Used only to label a
-/// failure as formatting-related — it deliberately ignores whitespace inside
+/// failure as formatting-related: it deliberately ignores whitespace inside
 /// string literals too, which is fine for a diagnosis and never decides
 /// pass/fail.
 fn squeeze_whitespace(content: &str) -> String {
@@ -207,8 +207,8 @@ impl CheckReport {
     /// Add a caveat to the drift error, for a cause the byte comparison cannot
     /// see.
     ///
-    /// [`finish`](Self::finish) otherwise names one remedy — regenerate and
-    /// commit — which is right whenever the committed file is the stale side.
+    /// [`finish`](Self::finish) otherwise names one remedy (regenerate and
+    /// commit) which is right whenever the committed file is the stale side.
     /// It is wrong when the *inputs* are being read wrong, and the report has
     /// no way to notice that on its own: the render it compares against is
     /// already the misreading. Callers that know of such a cause say so here,
@@ -224,7 +224,7 @@ impl CheckReport {
     /// Print every verdict and return `Err(Drift)` if any file is stale.
     ///
     /// `inputs` names what the files are derived from and `fix` is the exact
-    /// command that repairs them — both end up in the error, because a check
+    /// command that repairs them: both end up in the error, because a check
     /// that reports drift without saying how to fix it is a check people
     /// switch off.
     pub fn finish(self, inputs: &str, fix: &str) -> Result<()> {
@@ -306,7 +306,7 @@ impl CheckReport {
             inputs,
             fix,
             // The advice is right when the committed file is the stale side,
-            // which is the usual case but not the only one — so it stops being
+            // which is the usual case but not the only one, so it stops being
             // stated as the single remedy the moment a caller knows otherwise.
             if self.notes.is_empty() {
                 "."
@@ -322,7 +322,7 @@ impl CheckReport {
                 "Some of the differences above are"
             };
             message.push_str(&format!(
-                "\n\n{scope} whitespace only, so something else is rewriting these files — \
+                "\n\n{scope} whitespace only, so something else is rewriting these files: \
                  a formatter (stylua, prettier), or an editor trimming whitespace on save. \
                  Regenerating will not make that stop: exclude the generated path from \
                  whatever is touching it (a .styluaignore / .prettierignore entry)."
@@ -399,7 +399,7 @@ mod tests {
     fn a_stripped_trailing_newline_counts_as_formatting() {
         let dir = tempdir().unwrap();
         let path = write(dir.path(), "a.luau", "return 1");
-        // Still drift — but an editor's "trim on save", not a stale id, and
+        // Still drift, but an editor's "trim on save", not a stale id, and
         // the report has to say so or the advice ("regenerate") is wrong.
         assert!(matches!(
             compare("return 1\n", &path).unwrap(),

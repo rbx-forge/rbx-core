@@ -1,7 +1,7 @@
 //! The cookie check, over HTTP (#63).
 //!
 //! Every test names its own cookie value. The verdict cache is process-wide by
-//! design — one check per execution, however many steps consume the cookie —
+//! design (one check per execution, however many steps consume the cookie)
 //! and `cargo test` runs these in one process, so two tests sharing a cookie
 //! string would share a verdict and the "asked exactly once" test would pass
 //! or fail depending on the order the others ran in.
