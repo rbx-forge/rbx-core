@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::Args;
 
-use crate::places::{self, PlacesFile};
+use crate::places::{self, EnvSelector, PlacesFile, ALL_ENVS};
 
 /// Env name domain crates should use when no `--env` is passed and they
 /// fall back to a standalone config block (e.g. `[experience]` in
@@ -343,76 +343,108 @@ impl GlobalFlags {
         Some(cookie)
     }
 
+    /// What `--env` names, resolved against `rbxplace.toml`.
+    ///
+    /// `None` when no `--env` was passed, which is the caller's domain config
+    /// to answer (`[experience]` and friends), not this function's.
+    ///
+    /// Every plural selector goes through here, so a group is understood
+    /// wherever `all` is and nowhere else has to know groups exist.
+    pub fn env_selector(&self) -> Result<Option<EnvSelector>> {
+        let Some(value) = self.env.as_deref() else {
+            return Ok(None);
+        };
+        let places =
+            PlacesFile::load(&self.places).with_context(|| format!("resolving env `{value}`"))?;
+        Ok(Some(places.selector(value)?))
+    }
+
     /// The universe to act on, from `--universe-id` or by resolving `--env`.
     ///
     /// For subcommands that act on exactly one universe and have no per-tool
-    /// config to fall back on. `--env all` is rejected here rather than
+    /// config to fall back on. A plural selector is rejected here rather than
     /// silently taking the first: a command written for one universe should say
     /// so rather than guess.
     pub fn single_universe(&self) -> Result<u64> {
         if let Some(universe) = self.universe_id {
             return Ok(universe);
         }
-        let Some(env) = self.env.as_deref() else {
+        let Some(value) = self.env.as_deref() else {
             bail!(
                 "no target. Pass --env <name> to resolve one from rbxplace.toml, \
                  or --universe-id <id> to name it directly."
             );
         };
-        if env == "all" {
-            bail!("`--env all` names several universes; this command acts on one. Name one env.");
+        // `all` is refused before the file is read, so the answer does not
+        // depend on there being one. A group name cannot be recognised without
+        // it, which is the one asymmetry the feature costs.
+        if value == ALL_ENVS {
+            EnvSelector::Every.single("universes")?;
         }
-        places::resolve_universe_id(&self.places, env)
-            .with_context(|| format!("resolving env `{env}`"))
+        let places =
+            PlacesFile::load(&self.places).with_context(|| format!("resolving env `{value}`"))?;
+        let selector = places.selector(value)?;
+        let name = selector.single("universes")?;
+        Ok(places.get(name)?.universe_id)
     }
 
-    /// `--env all` expands to every env in `rbxplace.toml`. `--env <name>`
-    /// resolves to that env. No flag returns an empty Vec; the caller's
-    /// domain-specific config (e.g. `[experience]`) handles the fallback.
+    /// The envs to act on, expanded.
+    ///
+    /// `--env all` expands to every env in `rbxplace.toml`; `--env <group>` to
+    /// that group's members, in declared order; `--env <name>` to that one env.
+    /// No flag returns an empty Vec; the caller's domain-specific config (e.g.
+    /// `[experience]`) handles the fallback.
+    ///
+    /// **A group is expanded here and never travels further.** Every lockfile in
+    /// the suite keys on `(env name -> universe_id)`, and a group has no
+    /// universe of its own, so a group name reaching one would invent an env.
+    /// Expanding at the front is what makes that unrepresentable rather than
+    /// merely avoided.
     ///
     /// Tools that only need `universe_id` (rbx shop, parts of rbx meta,
     /// rbx apikey) call this. Tools that also need `place_id` (rbx place,
     /// rbx meta place-level fields) layer [`Self::resolve_place`] on top.
     pub fn resolve_envs(&self) -> Result<Vec<EnvTarget>> {
-        match self.env.as_deref() {
-            Some("all") => {
-                let places = PlacesFile::load(&self.places)?;
-                let mut targets = Vec::new();
-                for name in places.env_names() {
-                    let env = places.get(&name)?;
-                    targets.push(EnvTarget {
-                        name,
-                        universe_id: env.universe_id,
-                    });
-                }
-                if targets.is_empty() {
-                    bail!(
-                        "rbxplace.toml has no envs defined. \
-                         Add at least one [<env>] section with universe_id."
-                    );
-                }
-                Ok(targets)
-            }
-            Some(name) => {
-                let universe_id = places::resolve_universe_id(&self.places, name)?;
-                Ok(vec![EnvTarget {
-                    name: name.to_string(),
-                    universe_id,
-                }])
-            }
-            None => Ok(Vec::new()),
+        let Some(value) = self.env.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let places =
+            PlacesFile::load(&self.places).with_context(|| format!("resolving env `{value}`"))?;
+        let names = match places.selector(value)? {
+            EnvSelector::One(name) => vec![name],
+            EnvSelector::Every => places.env_names(),
+            EnvSelector::Group { members, .. } => members,
+        };
+        if names.is_empty() {
+            bail!(
+                "rbxplace.toml has no envs defined. \
+                 Add at least one [<env>] section with universe_id."
+            );
         }
+        names
+            .into_iter()
+            .map(|name| {
+                let universe_id = places.get(&name)?.universe_id;
+                Ok(EnvTarget { name, universe_id })
+            })
+            .collect()
     }
 
-    /// Resolve a single env target. Errors if `--env all` was used (only
-    /// makes sense for subcommands operating on one env at a time, e.g.
+    /// Resolve a single env target. Errors on a plural selector (only one env
+    /// makes sense for subcommands operating on one at a time, e.g.
     /// `rbx shop list`).
     pub fn resolve_single_env(&self) -> Result<Option<EnvTarget>> {
-        if matches!(self.env.as_deref(), Some("all")) {
-            bail!("--env all is not supported for this subcommand. Pass --env <name>.");
+        let Some(value) = self.env.as_deref() else {
+            return Ok(None);
+        };
+        if value == ALL_ENVS {
+            EnvSelector::Every.single("envs")?;
         }
-        let mut targets = self.resolve_envs()?;
-        Ok(targets.pop())
+        let places =
+            PlacesFile::load(&self.places).with_context(|| format!("resolving env `{value}`"))?;
+        let name = places.selector(value)?.single("envs")?.to_string();
+        let universe_id = places.get(&name)?.universe_id;
+        Ok(Some(EnvTarget { name, universe_id }))
     }
 
     /// Resolve `(universe_id, place_id)` for the targeted env. Used by
@@ -425,7 +457,7 @@ impl GlobalFlags {
     /// The place to act on, from `--place-id` or by resolving `--env` /
     /// `--place`.
     ///
-    /// The place-scoped twin of [`Self::single_universe`]. `--env all` is
+    /// The place-scoped twin of [`Self::single_universe`]. A plural selector is
     /// rejected rather than silently taking the first: a command written for
     /// one place should say so rather than guess.
     pub fn single_place(&self) -> Result<u64> {
@@ -437,15 +469,22 @@ impl GlobalFlags {
                 several.len()
             ),
         }
-        let Some(env) = self.env.as_deref() else {
+        let Some(value) = self.env.as_deref() else {
             bail!(
-                "no target. Pass --env <name> to resolve one from rbxplace.toml,                  or --place-id <id> to name it directly."
+                "no target. Pass --env <name> to resolve one from rbxplace.toml, \
+                 or --place-id <id> to name it directly."
             );
         };
-        if env == "all" {
-            bail!("`--env all` names several places; this command acts on one. Name one env.");
+        // Refused before the file is read, for the reason `single_universe`
+        // documents.
+        if value == ALL_ENVS {
+            EnvSelector::Every.single("places")?;
         }
-        Ok(self.resolve_place(env)?.1)
+        let places =
+            PlacesFile::load(&self.places).with_context(|| format!("resolving env `{value}`"))?;
+        let selector = places.selector(value)?;
+        let name = selector.single("places")?;
+        Ok(self.resolve_place(name)?.1)
     }
 
     /// Whether a write to `--place-id` should still prompt.

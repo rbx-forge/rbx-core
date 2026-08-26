@@ -607,3 +607,135 @@ fn the_default_pair_resolves_to_the_working_directory() {
         dir.join(PLACES_FILE)
     );
 }
+
+// ---------------------------------------------------------------------------
+// [groups]
+//
+// A group is an alias for a set of envs, and every one of these is a way the
+// alias could mean something other than what it says. All four are refused at
+// load so the answer is the same for every command in the suite.
+
+#[test]
+fn a_group_loads_and_keeps_its_declared_order() {
+    let (_d, path) = write_places(
+        r#"
+[groups]
+nonprod = ["staging", "dev"]
+live = ["prod"]
+
+[dev]
+universe_id = 100
+[staging]
+universe_id = 150
+[prod]
+universe_id = 200
+"#,
+    );
+    let places = PlacesFile::load(&path).unwrap();
+    assert_eq!(places.group("nonprod").unwrap(), ["staging", "dev"]);
+    assert_eq!(places.group("live").unwrap(), ["prod"]);
+    assert_eq!(places.group_names(), vec!["live", "nonprod"]);
+    // And it is not an env, which is the whole point.
+    assert_eq!(places.env_names(), vec!["dev", "prod", "staging"]);
+    assert!(places.get("nonprod").is_err());
+}
+
+#[test]
+fn the_groups_table_is_not_read_as_an_env() {
+    assert!(is_reserved_env_name("groups"));
+    assert!(RESERVED_ENV_NAMES.contains(&"groups"));
+
+    // Without the reservation this file would parse `[groups]` as an env with
+    // no `universe_id` and fail to load at all, for every tool in the suite.
+    let (_d, path) = write_places("[groups]\nnonprod = [\"dev\"]\n\n[dev]\nuniverse_id = 100\n");
+    let places = PlacesFile::load(&path).unwrap();
+    assert_eq!(places.env_names(), vec!["dev"]);
+
+    // And its keys are group names, so they are data rather than a fixed list:
+    // no unknown-key warning for any of them.
+    assert!(unknown_keys("[groups]\nwhatever = [\"dev\"]\n\n[dev]\nuniverse_id = 1\n").is_empty());
+}
+
+#[test]
+fn a_group_naming_an_env_that_does_not_exist_is_refused() {
+    let (_d, path) =
+        write_places("[groups]\nnonprod = [\"dev\", \"qa\"]\n\n[dev]\nuniverse_id = 100\n");
+    let err = format!("{:#}", PlacesFile::load(&path).unwrap_err());
+    assert!(err.contains("group 'nonprod' names 'qa'"), "{err}");
+    assert!(err.contains("Available: dev"), "{err}");
+}
+
+/// Flat by construction: nesting is refused by the undeclared-env rule, and the
+/// message says so rather than leaving the author to guess why a name it can
+/// see is not accepted.
+#[test]
+fn a_group_naming_another_group_says_groups_are_flat() {
+    let (_d, path) = write_places(
+        "[groups]\ninner = [\"dev\"]\nouter = [\"inner\"]\n\n[dev]\nuniverse_id = 100\n",
+    );
+    let err = format!("{:#}", PlacesFile::load(&path).unwrap_err());
+    assert!(err.contains("Groups are flat"), "{err}");
+}
+
+#[test]
+fn a_group_sharing_a_name_with_an_env_is_refused() {
+    let (_d, path) = write_places(
+        "[groups]\nstaging = [\"dev\"]\n\n[dev]\nuniverse_id = 100\n[staging]\nuniverse_id = 150\n",
+    );
+    let err = format!("{:#}", PlacesFile::load(&path).unwrap_err());
+    assert!(err.contains("both a group and an env"), "{err}");
+}
+
+#[test]
+fn a_group_taking_a_reserved_name_is_refused() {
+    for name in ["all", "owner", "codegen", "groups"] {
+        let (_d, path) = write_places(&format!(
+            "[groups]\n{name} = [\"dev\"]\n\n[dev]\nuniverse_id = 100\n"
+        ));
+        let err = format!("{:#}", PlacesFile::load(&path).unwrap_err());
+        assert!(err.contains("reserved name"), "{name}: {err}");
+    }
+}
+
+/// The same reasoning `rbxapikey.toml` already applies to its own env groups: a
+/// declaration that targets nothing is never what was meant.
+#[test]
+fn an_empty_group_is_refused() {
+    let (_d, path) = write_places("[groups]\nnonprod = []\n\n[dev]\nuniverse_id = 100\n");
+    let err = format!("{:#}", PlacesFile::load(&path).unwrap_err());
+    assert!(err.contains("names no envs"), "{err}");
+}
+
+/// A file with no `[groups]` table is the overwhelmingly common case and must
+/// be untouched by any of the above.
+#[test]
+fn a_file_without_groups_is_unchanged() {
+    let (_d, path) = write_places("[dev]\nuniverse_id = 100\n");
+    let places = PlacesFile::load(&path).unwrap();
+    assert!(places.group_names().is_empty());
+    assert!(places.group("nonprod").is_none());
+    assert_eq!(resolve_universe_id(&path, "dev").unwrap(), 100);
+}
+
+/// Not a harmless typo: every fan-out walks the list in order, so a repeated
+/// env is planned and written twice. `rbx meta sync` would re-send a thumbnail
+/// upload from a plan built before the first write, leaving a duplicate image
+/// on Roblox.
+#[test]
+fn a_group_naming_one_env_twice_is_refused() {
+    let (_d, path) = write_places(
+        "[groups]\nnonprod = [\"dev\", \"staging\", \"dev\"]\n\n\
+         [dev]\nuniverse_id = 100\n[staging]\nuniverse_id = 150\n",
+    );
+    let err = format!("{:#}", PlacesFile::load(&path).unwrap_err());
+    assert!(err.contains("names 'dev' twice"), "{err}");
+
+    // The same env in two different groups is fine: they are separate walks.
+    let (_d, path) = write_places(
+        "[groups]\na = [\"dev\"]\nb = [\"dev\", \"staging\"]\n\n\
+         [dev]\nuniverse_id = 100\n[staging]\nuniverse_id = 150\n",
+    );
+    let places = PlacesFile::load(&path).unwrap();
+    assert_eq!(places.group("a").unwrap(), ["dev"]);
+    assert_eq!(places.group("b").unwrap(), ["dev", "staging"]);
+}

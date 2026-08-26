@@ -104,15 +104,80 @@ fn no_env_returns_empty_targets() {
     assert!(targets.is_empty());
 }
 
+/// One wording for every plural selector, so `all` and a group are refused the
+/// same way. Four sites used to spell this out separately, two of them
+/// differing only in punctuation.
 #[test]
-fn env_all_errors_for_single_env_helper() {
+fn a_plural_selector_errors_for_the_single_env_helper() {
     let dir = tempfile::tempdir().unwrap();
     let places = dir.path().join("rbxplace.toml");
-    std::fs::write(&places, "[dev]\nuniverse_id = 100\n").unwrap();
+    std::fs::write(
+        &places,
+        "[groups]\nnonprod = [\"dev\"]\n\n[dev]\nuniverse_id = 100\n",
+    )
+    .unwrap();
 
     let cli = parse(&["--env", "all", "--places", places.to_str().unwrap()]);
     let err = cli.global.resolve_single_env().unwrap_err().to_string();
-    assert!(err.contains("--env all is not supported"));
+    assert!(err.contains("names several envs"), "got: {err}");
+
+    // And a group, which used to fall through every one of those checks into
+    // `resolve_universe_id` and fail as an env that does not exist.
+    let cli = parse(&["--env", "nonprod", "--places", places.to_str().unwrap()]);
+    let err = cli.global.resolve_single_env().unwrap_err().to_string();
+    assert!(err.contains("is a group of 1 envs"), "got: {err}");
+    assert!(err.contains("Name one of them"), "got: {err}");
+}
+
+#[test]
+fn a_group_expands_to_its_members_in_declared_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let places = dir.path().join("rbxplace.toml");
+    std::fs::write(
+        &places,
+        "[groups]\nnonprod = [\"staging\", \"dev\"]\n\n\
+         [dev]\nuniverse_id = 100\n[staging]\nuniverse_id = 150\n[prod]\nuniverse_id = 200\n",
+    )
+    .unwrap();
+
+    let cli = parse(&["--env", "nonprod", "--places", places.to_str().unwrap()]);
+    let targets = cli.global.resolve_envs().unwrap();
+    let names: Vec<&str> = targets.iter().map(|t| t.name.as_str()).collect();
+    // Declared order, not sorted: `--env all` sorts because it has no author
+    // order to respect, and a group has one.
+    assert_eq!(names, vec!["staging", "dev"]);
+    assert_eq!(targets[0].universe_id, 150);
+    assert_eq!(targets[1].universe_id, 100);
+
+    // `prod` is not in the group, which is the entire point.
+    assert!(!names.contains(&"prod"));
+}
+
+/// A group names several universes and several places, so both single-target
+/// helpers must refuse it exactly as they refuse `all`.
+#[test]
+fn a_group_is_refused_by_both_single_target_helpers() {
+    let dir = tempfile::tempdir().unwrap();
+    let places = dir.path().join("rbxplace.toml");
+    std::fs::write(
+        &places,
+        "[groups]\nnonprod = [\"dev\", \"staging\"]\n\n\
+         [dev]\nuniverse_id = 100\n[dev.places]\nmain = 111\n\
+         [staging]\nuniverse_id = 150\n[staging.places]\nmain = 222\n",
+    )
+    .unwrap();
+
+    let cli = parse(&["--env", "nonprod", "--places", places.to_str().unwrap()]);
+    let err = cli.global.single_universe().unwrap_err().to_string();
+    assert!(err.contains("acts on one universe"), "got: {err}");
+
+    let err = cli.global.single_place().unwrap_err().to_string();
+    assert!(err.contains("acts on one place"), "got: {err}");
+
+    // A member of the group still resolves on its own.
+    let cli = parse(&["--env", "dev", "--places", places.to_str().unwrap()]);
+    assert_eq!(cli.global.single_universe().unwrap(), 100);
+    assert_eq!(cli.global.single_place().unwrap(), 111);
 }
 
 #[test]

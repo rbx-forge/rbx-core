@@ -69,18 +69,79 @@ pub const OWNER_KEYS: &[&str] = &["type", "id"];
 ///
 /// `all` is what every command expands to "every env", so a section spelled
 /// that way means "the env literally named all" to some commands and "all of
-/// them" to others. `owner` and `codegen` are the reserved top-level tables
-/// [`PlacesFile`] consumes, so a section under either name is not read as an
-/// env at all.
+/// them" to others. `owner`, `codegen` and `groups` are the reserved top-level
+/// tables [`PlacesFile`] consumes, so a section under any of those names is not
+/// read as an env at all.
 ///
 /// One list for the whole suite, like [`ENV_KEYS`]: the writers live in
 /// rbx-init and rbx-import, and two copies of this rule would let one command
 /// write a name another refuses.
-pub const RESERVED_ENV_NAMES: &[&str] = &["all", "owner", "codegen"];
+pub const RESERVED_ENV_NAMES: &[&str] = &["all", "owner", "codegen", "groups"];
 
 /// Whether `name` is one of [`RESERVED_ENV_NAMES`].
 pub fn is_reserved_env_name(name: &str) -> bool {
     RESERVED_ENV_NAMES.contains(&name)
+}
+
+/// The `--env` value that means "every env in the file".
+///
+/// Spelled once. It used to be a bare `"all"` compared in seven places, and a
+/// literal repeated across five crates is a literal that eventually disagrees
+/// with itself.
+pub const ALL_ENVS: &str = "all";
+
+/// What a `--env` value names.
+///
+/// `all` and a group name are both plural, and the difference between them
+/// stops mattering the instant a command has to decide whether it may proceed.
+/// Making that a type rather than a string comparison is what lets a group be
+/// refused everywhere `all` already is, without a seventh site being forgotten.
+///
+/// Built by [`PlacesFile::selector`], which is also where an unknown name is
+/// refused, so holding one of these means the name resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvSelector {
+    /// One env, named directly.
+    One(String),
+    /// Every env in the file: the `--env all` spelling.
+    Every,
+    /// The envs a `[groups]` entry names, in declared order.
+    Group { name: String, members: Vec<String> },
+}
+
+impl EnvSelector {
+    /// Whether this names more than one env.
+    ///
+    /// True for `all` and for every group, since a group is refused when empty
+    /// and a one-member group is still a plural selector: what it means is "the
+    /// envs in this group", and that it currently holds one is a fact about the
+    /// file rather than about the command.
+    pub fn is_plural(&self) -> bool {
+        !matches!(self, Self::One(_))
+    }
+
+    /// The one env this names, or a refusal that says why there is not one.
+    ///
+    /// `what` is the plural noun the caller cares about: "universes" and
+    /// "places" send a reader to different parts of `rbxplace.toml`, which is
+    /// why the four sites that used to spell this out separately did not simply
+    /// share one string.
+    pub fn single(&self, what: &str) -> Result<&str> {
+        match self {
+            Self::One(name) => Ok(name),
+            Self::Every => bail!(
+                "`--env {ALL_ENVS}` names several {what}; this command acts on one. Name one env."
+            ),
+            Self::Group { name, members } => bail!(
+                "`--env {}` is a group of {} envs ({}); this command acts on one {}. \
+                 Name one of them.",
+                name,
+                members.len(),
+                members.join(", "),
+                what.trim_end_matches('s')
+            ),
+        }
+    }
 }
 
 /// The file's name, and the default value of the global `--places` flag.
@@ -164,6 +225,11 @@ pub fn unknown_keys(content: &str) -> Vec<UnknownKey> {
         match name.as_str() {
             "owner" => collect_unknown(name, table, OWNER_KEYS, &mut found),
             "codegen" => collect_unknown(name, table, CODEGEN_KEYS, &mut found),
+            // `[groups]` has no fixed key list: its keys are group names the
+            // author chose, which are data. What its *values* must be is a
+            // list of env names, which serde enforces at parse time and
+            // `validate_groups` checks against the envs actually declared.
+            "groups" => {}
             env => {
                 collect_unknown(env, table, ENV_KEYS, &mut found);
                 // Inline (`owner = { type = "user", id = 42 }`) or a
@@ -278,8 +344,9 @@ pub struct PlacesCodegen {
 }
 
 /// Top-level shape of `rbxplace.toml`. Each top-level table key is an env name.
-/// The optional `[owner]` and `[codegen]` tables are consumed as reserved keys
-/// (not parsed as envs), so both must be declared before the flattened map.
+/// The optional `[owner]`, `[codegen]` and `[groups]` tables are consumed as
+/// reserved keys (not parsed as envs), so all three must be declared before the
+/// flattened map.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 pub struct PlacesFile {
@@ -291,6 +358,28 @@ pub struct PlacesFile {
     /// Codegen output path for `rbx env gen-module`.
     #[serde(default)]
     pub codegen: Option<PlacesCodegen>,
+
+    /// Named subsets of the envs below, usable anywhere `--env` is.
+    ///
+    /// ```toml
+    /// [groups]
+    /// nonprod = ["dev", "staging", "qa"]
+    /// ```
+    ///
+    /// A group is an **alias and nothing more**: `--env nonprod` runs what
+    /// `--env all` would run, over three envs instead of every env. It is
+    /// expanded to its members before anything else happens, so no lockfile,
+    /// no overlay and no generated module ever sees a group name. That is what
+    /// keeps the feature to one concept: every one of those three keys `(env
+    /// name -> universe_id)`, and a group has no universe of its own to record.
+    ///
+    /// Flat by construction: a member must be a declared env, never another
+    /// group. Nesting invites cycles and buys nothing that a second line does
+    /// not. That rule and the name collisions are enforced at load, by
+    /// `validate_groups`, so a bad group fails the file for every command in
+    /// the suite rather than once per tool.
+    #[serde(default)]
+    pub groups: HashMap<String, Vec<String>>,
 
     #[serde(flatten)]
     pub environments: HashMap<String, Environment>,
@@ -410,9 +499,141 @@ impl PlacesFile {
         let mut file: Self = toml::from_str(&content)
             .with_context(|| format!("Failed to parse {}", path.display()))?;
         file.validate_unique_env_names(path)?;
+        file.validate_groups(path)?;
         file.unknown = unknown_keys(&content);
         warn_unknown_keys(path, &file.unknown);
         Ok(file)
+    }
+
+    /// Refuse a `[groups]` table that cannot mean what it says.
+    ///
+    /// Four rules, all checked here so a malformed file fails the same way for
+    /// every command in the suite rather than once per tool:
+    ///
+    /// - **A member must be a declared env.** A group naming `qa` in a file with
+    ///   no `[qa]` would silently target fewer envs than it reads as, and
+    ///   `--env nonprod` would look like it worked.
+    /// - **A group may not be named after an env.** `--env staging` cannot mean
+    ///   both, and picking either one silently is worse than refusing.
+    /// - **A group may not take a reserved name.** `all` in particular: a group
+    ///   spelled `all` would shadow the one selector every command already has.
+    /// - **A group may not be empty.** A declaration that targets nothing is
+    ///   never what was meant, which is the same reasoning `rbxapikey.toml`
+    ///   already applies to its own env groups.
+    ///
+    /// Nesting is refused by the first rule and needs no rule of its own: a
+    /// group name is not an env name, so naming one inside another fails as an
+    /// undeclared env.
+    fn validate_groups(&self, path: &Path) -> Result<()> {
+        // Sorted so the reported group does not depend on HashMap order.
+        let mut names: Vec<&str> = self.groups.keys().map(|s| s.as_str()).collect();
+        names.sort();
+
+        for name in names {
+            let members = &self.groups[name];
+            if is_reserved_env_name(name) {
+                bail!(
+                    "{}: [groups] declares '{}', which is a reserved name ({}). \
+                     Name the group something else.",
+                    path.display(),
+                    name,
+                    RESERVED_ENV_NAMES.join(", ")
+                );
+            }
+            if self.environments.contains_key(name) {
+                bail!(
+                    "{}: '{}' is both a group and an env, and `--env {}` cannot mean both. \
+                     Rename one of them.",
+                    path.display(),
+                    name,
+                    name
+                );
+            }
+            if members.is_empty() {
+                bail!(
+                    "{}: group '{}' names no envs. A group that targets nothing is never \
+                     what was meant: list its envs, or delete it.",
+                    path.display(),
+                    name
+                );
+            }
+            // A repeated member is not a harmless typo: every fan-out visits
+            // the list in order, so `["dev", "dev"]` plans `dev` twice against
+            // one unmutated lockfile snapshot and applies both plans, which on
+            // `rbx meta sync` re-sends a thumbnail upload and leaves a
+            // duplicate image on Roblox. Refused here rather than deduplicated
+            // downstream: silently visiting one env for a list that names it
+            // twice is a second answer to what the file says.
+            let mut seen = HashSet::with_capacity(members.len());
+            for member in members {
+                if !seen.insert(member.as_str()) {
+                    bail!(
+                        "{}: group '{}' names '{}' twice. Every command walks a group in \
+                         order, so a repeated env is written twice: list it once.",
+                        path.display(),
+                        name,
+                        member
+                    );
+                }
+            }
+            for member in members {
+                if self.environments.contains_key(member.as_str()) {
+                    continue;
+                }
+                let mut available: Vec<&str> =
+                    self.environments.keys().map(|s| s.as_str()).collect();
+                available.sort();
+                let nested = if self.groups.contains_key(member.as_str()) {
+                    "\n  It is another group. Groups are flat: list the envs themselves."
+                } else {
+                    ""
+                };
+                bail!(
+                    "{}: group '{}' names '{}', which is not an env in this file.\n  \
+                     Available: {}{}",
+                    path.display(),
+                    name,
+                    member,
+                    available.join(", "),
+                    nested
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The envs a group names, in the order they were declared.
+    pub fn group(&self, name: &str) -> Option<&[String]> {
+        self.groups.get(name).map(|members| members.as_slice())
+    }
+
+    /// Sorted group names, for a listing.
+    pub fn group_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.groups.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// What a `--env` value names, against this file.
+    ///
+    /// The one place the question is answered. Before this existed, `"all"` was
+    /// compared as a literal in seven places across five crates, and each of
+    /// them would have handed a group name straight to [`resolve_universe_id`]
+    /// as an env that does not exist.
+    pub fn selector(&self, value: &str) -> Result<EnvSelector> {
+        if value == ALL_ENVS {
+            return Ok(EnvSelector::Every);
+        }
+        if let Some(members) = self.group(value) {
+            return Ok(EnvSelector::Group {
+                name: value.to_string(),
+                members: members.to_vec(),
+            });
+        }
+        // `get` for the error: its "Available: ..." list is what makes a typo
+        // obvious, and a group name reaching here is a typo like any other.
+        self.get(value)?;
+        Ok(EnvSelector::One(value.to_string()))
     }
 
     /// Reject two sections that resolve to the same env name.
