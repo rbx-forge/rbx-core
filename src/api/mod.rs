@@ -4,12 +4,18 @@
 
 mod asset;
 mod base;
+mod configs;
 mod csrf;
 mod error;
 mod retry;
 
 pub use asset::{download_asset, download_asset_from};
 pub use base::{encode_query_value, explain_missing_scope, ApiBase, DEFAULT_API_BASE};
+pub use configs::{
+    validate_entries, ConfigMetadata, ConfigSnapshot, ConfigsClient, DraftResult, PublishResult,
+    ReplacedDraft, Repository, RepositoryDraft, RevisionEntry, MAX_KEYS_PER_REPOSITORY,
+    MAX_KEY_LENGTH,
+};
 pub use csrf::{send_with_csrf, CsrfError, CsrfToken, Refusal};
 pub use error::{api_status, is_api_status, roblox_error, roblox_message, ApiError};
 pub use retry::{execute_json, execute_with_retry, execute_with_retry_policy, RetryPolicy};
