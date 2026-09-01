@@ -31,6 +31,40 @@ pub fn confirm_always(prompt: &str, skip_yes: bool) -> Result<()> {
     prompt_user(prompt)
 }
 
+/// Prompt for the target's name typed back, rather than for a `y`.
+///
+/// For the operations where the cost of a slip is not the operation itself but
+/// the fact that it landed on the wrong thing. A `y/N` confirms that you meant
+/// to run the command; typing `PlayerData` back confirms that you meant to run
+/// it **on `PlayerData`**, which is the mistake worth catching when the name
+/// came from a shell history or an autocomplete.
+///
+/// `skip_yes` still bypasses it. `--yes` is what a script passes, and a script
+/// that names the wrong store was going to name it in the typed answer too.
+pub fn confirm_by_typing(name: &str, what: &str, skip_yes: bool) -> Result<()> {
+    if skip_yes {
+        return Ok(());
+    }
+
+    let typed = dialoguer::Input::<String>::new()
+        .with_prompt(format!(
+            "{} {what}\n  Type {} to confirm",
+            "⚠".yellow(),
+            name.bold()
+        ))
+        .allow_empty(true)
+        .interact_text()
+        .map_err(|e| anyhow::anyhow!("Prompt error: {}", e))?;
+
+    // Exact, and deliberately not trimmed-and-lowercased. A near miss is a
+    // reason to stop: the point of the question is that the answer had to be
+    // read off the target rather than guessed at.
+    if typed != name {
+        bail!("Aborted: expected \"{name}\", got \"{typed}\".");
+    }
+    Ok(())
+}
+
 fn prompt_user(prompt: &str) -> Result<()> {
     let confirmed = Confirm::new()
         .with_prompt(format!("{} {}", "⚠".yellow(), prompt))
@@ -68,5 +102,12 @@ mod tests {
     #[test]
     fn always_skips_when_yes_set() {
         confirm_always("would prompt", true).expect("should skip");
+    }
+
+    /// The only branch reachable without a terminal, and the one a script
+    /// takes. Everything else in `confirm_by_typing` needs somebody to type.
+    #[test]
+    fn typing_is_skipped_when_yes_set() {
+        confirm_by_typing("PlayerData", "would prompt", true).expect("should skip");
     }
 }
