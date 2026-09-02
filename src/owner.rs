@@ -31,6 +31,25 @@ impl std::fmt::Display for OwnerType {
     }
 }
 
+/// So `rbx env set owner --type group` takes the domain type directly.
+///
+/// Implemented by hand rather than derived, to keep `#[derive(ValueEnum)]` and
+/// its `clap` attributes off a type that four crates match on. The spellings
+/// are the ones already on disk, which is the point: what somebody types for
+/// `--type` and what they read in `[owner]` must not be two vocabularies.
+impl clap::ValueEnum for OwnerType {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[OwnerType::Group, OwnerType::User]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(clap::builder::PossibleValue::new(match self {
+            OwnerType::Group => "group",
+            OwnerType::User => "user",
+        }))
+    }
+}
+
 /// Who owns the project. Tools without their own owner field fall back to
 /// this one.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

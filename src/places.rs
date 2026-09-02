@@ -496,12 +496,31 @@ impl PlacesFile {
                 path.display()
             )
         })?;
-        let mut file: Self = toml::from_str(&content)
+        let file = Self::parse(&content, path)?;
+        warn_unknown_keys(path, &file.unknown);
+        Ok(file)
+    }
+
+    /// Parse and validate a document that is not (yet) on disk.
+    ///
+    /// Split out of [`Self::load`] for the commands that *write* this file:
+    /// `rbx env set` builds the new document in memory and parses it here
+    /// before saving, so it cannot produce a file that every other command
+    /// would then refuse to read. Writing a `[groups]` entry naming an env
+    /// that does not exist is the case that matters: `validate_groups` rejects
+    /// it at load, which would leave the writer's own output unusable.
+    ///
+    /// `path` is only used to name the file in errors. Unlike `load` this does
+    /// not warn about unknown keys: a caller checking a candidate document
+    /// would emit the warning for a file nobody has seen yet, and the
+    /// deduplication behind that warning would then swallow the real one when
+    /// the file is next read.
+    pub fn parse(content: &str, path: &Path) -> Result<Self> {
+        let mut file: Self = toml::from_str(content)
             .with_context(|| format!("Failed to parse {}", path.display()))?;
         file.validate_unique_env_names(path)?;
         file.validate_groups(path)?;
-        file.unknown = unknown_keys(&content);
-        warn_unknown_keys(path, &file.unknown);
+        file.unknown = unknown_keys(content);
         Ok(file)
     }
 
