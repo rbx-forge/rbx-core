@@ -23,11 +23,6 @@ fn defaults_and_env_vars() {
     // SAFETY: only this test mutates RBX_* env vars; other tests don't touch them.
     unsafe { std::env::remove_var("RBX_API_KEY") };
     unsafe { std::env::remove_var("RBX_COOKIE") };
-    // `resolve_cookie` reads this one too since #20 folded rbx-apikey's second
-    // lookup into it. Left set, it is an explicit source, and the
-    // `--no-auto-cookie` assertion below would fail on the machine of anyone
-    // who happens to have it exported.
-    unsafe { std::env::remove_var("RBXAPIKEY_COOKIE") };
 
     // Defaults when nothing is set.
     let cli = parse(&[]);
@@ -229,7 +224,6 @@ fn a_studio_session_is_not_sent_to_a_run_that_cannot_be_asked() {
     // SAFETY: the env-var tests are serialised into `defaults_and_env_vars`;
     // this one only clears, and clearing twice is harmless.
     unsafe { std::env::remove_var("RBX_COOKIE") };
-    unsafe { std::env::remove_var("RBXAPIKEY_COOKIE") };
 
     let cli = parse(&[]);
     assert!(

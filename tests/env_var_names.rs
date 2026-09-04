@@ -30,14 +30,16 @@ use std::path::{Path, PathBuf};
 
 /// Per-tool names that are still genuinely read somewhere, with the reason.
 ///
-/// `RBXAPIKEY_COOKIE` predates the merge and is still honoured, now as one of
-/// the explicit sources in `GlobalFlags::resolve_cookie`: it used to live in
-/// `rbx-apikey`'s own `resolve_cookie_from_env`, which is what let
-/// `--no-auto-cookie` be ignored (#20). Kept rather than dropped because
-/// removing a variable that works today would break whoever set it, and it
-/// costs nothing to keep reading. Anything not on this list is a typo or a
-/// leftover.
-const STILL_READ: &[&str] = &["RBXAPIKEY_COOKIE"];
+/// Empty, and worth keeping empty. `RBXAPIKEY_COOKIE` was the last entry: it
+/// outlived the merge as an explicit source in `GlobalFlags::resolve_cookie`
+/// and was dropped in 0.9.0, on the argument that a variable kept for whoever
+/// might have set it is only worth its cost once somebody has. Every per-tool
+/// name is now a typo or a leftover, with no exception to check first.
+///
+/// A list with one entry invites a second. If a name genuinely has to come
+/// back, add it here with the reason rather than teaching the matcher below to
+/// skip it: the exception should be as visible as the rule.
+const STILL_READ: &[&str] = &[];
 
 /// This file's own name, skipped during the walk: see the loop below.
 const SELF: &str = "env_var_names.rs";

@@ -134,34 +134,6 @@ fn ask_yes_no(_question: &str) -> Option<bool> {
     None
 }
 
-/// `RBXAPIKEY_COOKIE`, the one per-tool cookie variable that outlived the
-/// merge into a single binary.
-///
-/// It is read here rather than in `rbx-apikey` because this function is the
-/// single cookie-resolution chain, and the alternative (a per-crate fallback
-/// hung off this one's `None`) is exactly the shape that let
-/// `--no-auto-cookie` be ignored.
-///
-/// Two consequences worth stating, both deliberate:
-///
-/// - It is an **explicit** source, so it is consulted before the
-///   `--no-auto-cookie` check. The flag governs auto-detection, not variables
-///   the user set on purpose.
-/// - It now beats auto-detection. It previously lost: `rbx-apikey` only
-///   reached it after this function returned `None`, which on any machine with
-///   Studio installed never happened, so a variable set on purpose was
-///   silently overridden by a cookie nobody asked for. Explicit beats implicit.
-///
-/// `RBX_COOKIE` still wins over it, which is the order that already held.
-/// Empty means unset here, unlike `RBX_COOKIE`, where clap makes an empty
-/// value an explicit "no cookie": this variable has no flag to spell that with,
-/// so an empty one is indistinguishable from a leftover in a shell profile.
-fn legacy_apikey_cookie() -> Option<String> {
-    std::env::var("RBXAPIKEY_COOKIE")
-        .ok()
-        .filter(|v| !v.is_empty())
-}
-
 /// The Studio lookup, behind a seam so the unit tests can say what the machine
 /// has.
 ///
@@ -307,9 +279,12 @@ impl GlobalFlags {
     /// refuse. An escape hatch that silently does not work is worse than none,
     /// because the user believes they opted out.
     ///
-    /// Folding the last explicit source into this chain is what keeps it from
-    /// happening again. Two lookup sites is what made the divergence possible;
-    /// one cannot diverge from itself.
+    /// One chain is what keeps it from happening again. Two lookup sites is
+    /// what made the divergence possible; one cannot diverge from itself. That
+    /// is also why a caller wanting "the cookie this run will use" must call
+    /// this rather than read [`Self::cookie`]: the flag is one source of
+    /// several, and the two answers differ on exactly the machines where it
+    /// matters.
     ///
     /// ## Auto-detection is opt-in
     ///
@@ -328,9 +303,6 @@ impl GlobalFlags {
     pub fn resolve_cookie(&self) -> Option<String> {
         if let Some(c) = &self.cookie {
             return Some(c.clone());
-        }
-        if let Some(c) = legacy_apikey_cookie() {
-            return Some(c);
         }
         if self.no_auto_cookie {
             return None;
@@ -525,11 +497,12 @@ pub struct EnvTarget {
 }
 
 #[cfg(test)]
-// `set_var`/`remove_var` are unsafe as of the 2024 semantics, and the whole
-// point of these tests is what the process environment resolves to. Scoped to
-// the test module so the crate-wide `unsafe_code` lint still covers the code
-// that ships. `tests/env.rs` allows it file-wide for the same reason.
-#[allow(unsafe_code)]
+// No `#[allow(unsafe_code)]` here any more. It was needed while these tests
+// set the per-tool cookie variable retired in 0.9.0, since `set_var` is
+// `unsafe` under the 2024 semantics; with it gone the whole module works off
+// the thread-local Studio seam, and leaving the allow in place would silently
+// permit the next `set_var` to come back. `tests/env.rs` still needs its own,
+// for the variables clap reads.
 mod tests {
     use super::*;
     use std::cell::Cell;
@@ -549,24 +522,6 @@ mod tests {
         let out = body();
         STUDIO.with(|s| s.set(None));
         out
-    }
-
-    /// `RBXAPIKEY_COOKIE` is process-global, so a test that sets it would
-    /// otherwise change what a test running in parallel resolves. The seam
-    /// above is thread-local and needs none of this; the environment does.
-    ///
-    /// Poisoning is ignored: a panicking test has already failed, and letting
-    /// it fail every later test as well only buries which one broke.
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Nothing set, so every test starts from the same place.
-    fn clear_legacy_var() {
-        // SAFETY: every caller holds `env_lock`, and `tests/env.rs` (the only
-        // other place that touches these) is a separate process.
-        unsafe { std::env::remove_var("RBXAPIKEY_COOKIE") };
     }
 
     /// Default flags: nothing passed, so a found Studio cookie is a candidate
@@ -603,57 +558,31 @@ mod tests {
         }
     }
 
+    /// The explicit source wins, and neither cookie flag can take it away.
+    ///
+    /// `--cookie` / `RBX_COOKIE` is the only explicit source left: it beats
+    /// a signed-in Studio, and `--no-auto-cookie` does not suppress it, because
+    /// that flag governs auto-detection and not what the user typed.
     #[test]
     fn cookie_resolution_order() {
-        let _guard = env_lock();
-        clear_legacy_var();
-
         let mut explicit = flags();
         explicit.cookie = Some("from-flag".into());
 
-        // SAFETY: `_guard` is held, and `tests/env.rs` is a separate process.
-        unsafe { std::env::set_var("RBXAPIKEY_COOKIE", "from-legacy-var") };
+        let mut explicit_no_auto = no_auto();
+        explicit_no_auto.cookie = Some("from-flag".into());
 
-        assert_eq!(
-            flags().resolve_cookie().as_deref(),
-            Some("from-legacy-var"),
-            "RBXAPIKEY_COOKIE is read here now, not in rbx-apikey"
-        );
-        assert_eq!(
-            explicit.resolve_cookie().as_deref(),
-            Some("from-flag"),
-            "--cookie / RBX_COOKIE still wins over it, the order that already held"
-        );
-
-        // The variable is explicit, so the flag must not suppress it: the flag
-        // governs auto-detection, not what the user set on purpose.
-        assert_eq!(
-            no_auto().resolve_cookie().as_deref(),
-            Some("from-legacy-var"),
-            "--no-auto-cookie must not suppress an explicit source"
-        );
-
-        // It now beats auto-detection. It used to lose: rbx-apikey only
-        // reached it once `resolve_cookie` returned `None`, which never
-        // happened on a machine with Studio installed.
         with_studio_cookie(Some("from-studio"), || {
             assert_eq!(
-                consented().resolve_cookie().as_deref(),
-                Some("from-legacy-var"),
-                "an explicitly set variable must beat a cookie nobody asked for"
+                explicit.resolve_cookie().as_deref(),
+                Some("from-flag"),
+                "an explicit cookie must beat one nobody asked for"
+            );
+            assert_eq!(
+                explicit_no_auto.resolve_cookie().as_deref(),
+                Some("from-flag"),
+                "--no-auto-cookie governs auto-detection, not an explicit source"
             );
         });
-
-        // Empty cannot mean "no cookie" for this one: it has no flag to spell
-        // that with, so an empty value is indistinguishable from a leftover in
-        // a shell profile.
-        // SAFETY: as above.
-        unsafe { std::env::set_var("RBXAPIKEY_COOKIE", "") };
-        with_studio_cookie(Some("from-studio"), || {
-            assert_eq!(consented().resolve_cookie().as_deref(), Some("from-studio"));
-        });
-
-        clear_legacy_var();
     }
 
     /// #20. The flag has to stop the Studio lookup on a machine that has one to
@@ -662,9 +591,6 @@ mod tests {
     /// on exactly the check that was broken.
     #[test]
     fn no_auto_cookie_stops_the_studio_lookup() {
-        let _guard = env_lock();
-        clear_legacy_var();
-
         with_studio_cookie(Some("from-studio"), || {
             assert!(
                 no_auto().resolve_cookie().is_none(),
@@ -681,9 +607,6 @@ mod tests {
     /// pipeline cannot reach into whoever's session the runner happens to have.
     #[test]
     fn a_found_cookie_is_not_sent_without_consent() {
-        let _guard = env_lock();
-        clear_legacy_var();
-
         with_studio_cookie(Some("from-studio"), || {
             assert!(
                 flags().resolve_cookie().is_none(),
@@ -696,9 +619,6 @@ mod tests {
     /// rather than being removed.
     #[test]
     fn the_standing_yes_reaches_the_studio_cookie() {
-        let _guard = env_lock();
-        clear_legacy_var();
-
         with_studio_cookie(Some("from-studio"), || {
             assert_eq!(consented().resolve_cookie().as_deref(), Some("from-studio"));
         });
@@ -711,9 +631,6 @@ mod tests {
     /// with, and this pins the resolution side of it too.
     #[test]
     fn the_standing_no_beats_the_standing_yes() {
-        let _guard = env_lock();
-        clear_legacy_var();
-
         let both = GlobalFlags {
             no_auto_cookie: true,
             auto_cookie: true,
@@ -726,9 +643,6 @@ mod tests {
 
     #[test]
     fn nothing_anywhere_resolves_to_nothing() {
-        let _guard = env_lock();
-        clear_legacy_var();
-
         with_studio_cookie(None, || {
             assert!(consented().resolve_cookie().is_none());
         });
