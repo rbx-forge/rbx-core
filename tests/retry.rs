@@ -3,7 +3,9 @@
 //! server. We use a tiny `RetryPolicy` (zero backoff) to keep tests instant.
 
 use anyhow::Result;
-use rbx_core::api::{execute_json, execute_with_retry_policy, RetryPolicy};
+use rbx_core::api::{
+    execute_create_with_retry_policy, execute_json, execute_with_retry_policy, RetryPolicy,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -195,6 +197,85 @@ async fn no_retry_on_4xx_other_than_429() {
     assert!(err.contains("400"));
     assert!(err.contains("bad request"));
     assert_eq!(calls.load(Ordering::SeqCst), 1, "should not retry on 400");
+}
+
+#[tokio::test]
+async fn a_create_is_resent_after_a_429() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/c"))
+        .respond_with(ResponseTemplate::new(429))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/c"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::new();
+    let url = format!("{}/c", server.uri());
+    let resp = execute_create_with_retry_policy(
+        || async { Ok(client.post(&url).send().await?) },
+        &fast_policy(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn a_create_is_not_resent_after_a_5xx() {
+    // The product may exist already: a resend would make a second one that
+    // Roblox will not let anyone delete.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/c"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("try later"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::new();
+    let url = format!("{}/c", server.uri());
+    let err = execute_create_with_retry_policy(
+        || async { Ok(client.post(&url).send().await?) },
+        &fast_policy(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("503"), "{err}");
+}
+
+#[tokio::test]
+async fn a_create_is_not_resent_after_a_network_failure() {
+    let calls = Arc::new(AtomicU32::new(0));
+    let calls_clone = calls.clone();
+
+    let result = execute_create_with_retry_policy(
+        || {
+            calls_clone.fetch_add(1, Ordering::SeqCst);
+            async {
+                Ok(Client::new()
+                    .post("http://127.0.0.1:1/never")
+                    .timeout(CLIENT_TIMEOUT)
+                    .send()
+                    .await?)
+            }
+        },
+        &fast_policy_n(2),
+    )
+    .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a lost answer may hide a create that went through"
+    );
 }
 
 #[tokio::test]

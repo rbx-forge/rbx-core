@@ -57,13 +57,51 @@ where
 /// Does **not** retry on 4xx other than 429, or on opaque errors from the
 /// request closure that aren't reqwest network errors (e.g. config errors).
 pub async fn execute_with_retry_policy<F, Fut>(
-    mut make_request: F,
+    make_request: F,
     policy: &RetryPolicy,
 ) -> Result<Response>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<Response>>,
 {
+    execute(make_request, policy, Resend::AnyTransientFailure).await
+}
+
+/// For a request that must not land twice: retries on HTTP 429 only.
+///
+/// A 429 is Roblox refusing before doing anything, so sending again cannot
+/// apply the request a second time. A 5xx or a timeout carries no such
+/// promise: the create may have gone through before the answer was lost, and
+/// resending it makes a second developer product or pass that cannot be
+/// deleted. Those come back to the caller on the first occurrence.
+pub async fn execute_create_with_retry_policy<F, Fut>(
+    make_request: F,
+    policy: &RetryPolicy,
+) -> Result<Response>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Response>>,
+{
+    execute(make_request, policy, Resend::RateLimitOnly).await
+}
+
+/// Which failures are safe to send again.
+#[derive(Clone, Copy, PartialEq)]
+enum Resend {
+    AnyTransientFailure,
+    RateLimitOnly,
+}
+
+async fn execute<F, Fut>(
+    mut make_request: F,
+    policy: &RetryPolicy,
+    resend: Resend,
+) -> Result<Response>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Response>>,
+{
+    let ambiguous_ok = resend == Resend::AnyTransientFailure;
     let mut attempt = 0;
     loop {
         match make_request().await {
@@ -73,7 +111,8 @@ where
                     return Ok(response);
                 }
 
-                let retryable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+                let retryable = status == StatusCode::TOO_MANY_REQUESTS
+                    || (ambiguous_ok && status.is_server_error());
                 if !retryable || attempt >= policy.max_retries {
                     let body = response.text().await.unwrap_or_default();
                     // Typed rather than formatted: callers branch on the
@@ -97,7 +136,8 @@ where
                 attempt += 1;
             }
             Err(e) => {
-                if !is_transient_network_error(&e) || attempt >= policy.max_retries {
+                if !ambiguous_ok || !is_transient_network_error(&e) || attempt >= policy.max_retries
+                {
                     return Err(e);
                 }
                 tokio::time::sleep(policy.delay_for(attempt, None)).await;

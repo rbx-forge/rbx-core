@@ -15,6 +15,10 @@
 //!    applied in sequence until the file reaches the current version.
 //! 3. **One helper**, so behaviour cannot drift between lockfiles.
 //!
+//! Writing goes through [`write()`] for the same reason: a `sync` rewrites its
+//! lockfile after every resource it creates, and the retry that keeps an
+//! editor from stopping that run halfway belongs to every lockfile at once.
+//!
 //! The migration registries are empty today, and that is the point: the
 //! enforcement point has to exist *before* lockfiles are in the wild, because
 //! it is the part that cannot be retrofitted cheaply afterwards. This mirrors
@@ -22,10 +26,70 @@
 //! `rbx env` (see `docs/env.md`): a version we silently ignore is a version we
 //! silently claim to have honoured.
 
+use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
+
+/// How many times [`write()`] tries before giving up.
+const WRITE_ATTEMPTS: u32 = 5;
+
+/// Wait before retry `n` (1-based) grows linearly: 50, 100, 150, 200 ms, so
+/// the worst case adds half a second to a run that would otherwise have died.
+const WRITE_BACKOFF: Duration = Duration::from_millis(50);
+
+/// Write a lockfile, riding out another process that holds it for a moment.
+///
+/// A `sync` rewrites its lockfile once per resource, right after the remote
+/// call that created it. On Windows, anything that reacts to that change (an
+/// editor's TOML extension, the search indexer, Defender) may have the file
+/// mapped or open when the next write lands, and the write then fails with
+/// `os error 1224`. Nothing is wrong with the file: the reader lets go within
+/// milliseconds. Failing there anyway stops the run with a resource created on
+/// Roblox and missing from the lockfile, so a short retry is the cheaper path.
+///
+/// Only those transient codes are retried. A full disk or a missing directory
+/// fails on the first attempt, as before.
+pub fn write(path: &Path, content: &str) -> Result<()> {
+    write_with(
+        path,
+        content,
+        |p, c| std::fs::write(p, c),
+        std::thread::sleep,
+    )
+}
+
+fn write_with(
+    path: &Path,
+    content: &str,
+    mut attempt: impl FnMut(&Path, &str) -> io::Result<()>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<()> {
+    let mut tries = 1;
+    loop {
+        match attempt(path, content) {
+            Ok(()) => return Ok(()),
+            Err(err) if tries < WRITE_ATTEMPTS && is_transient(&err) => {
+                sleep(WRITE_BACKOFF * tries);
+                tries += 1;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("Failed to write {}", path.display()))
+            }
+        }
+    }
+}
+
+/// The Windows codes a reader holding the file produces, and nothing else.
+///
+/// 1224 is a mapped section (`ERROR_USER_MAPPED_FILE`), 32 a sharing violation,
+/// 5 the access denial a pending delete or a scanner gives. On other platforms
+/// a write does not fail because someone is reading, so nothing is retried.
+fn is_transient(err: &io::Error) -> bool {
+    cfg!(windows) && matches!(err.raw_os_error(), Some(1224 | 32 | 5))
+}
 
 /// One step of a lockfile format migration.
 ///
@@ -373,6 +437,66 @@ mod tests {
                 "{step:?} should not parse as a single migration step"
             );
         }
+    }
+
+    /// Drive `write_with` against a writer that fails with `codes` in order,
+    /// then succeeds. Returns the result, the attempts made and the waits.
+    fn write_failing_with(codes: &[i32]) -> (Result<()>, usize, Vec<Duration>) {
+        let mut failures = codes.iter();
+        let mut attempts = 0;
+        let mut waits = Vec::new();
+        let result = write_with(
+            Path::new("fake.lock.toml"),
+            "version = 1\n",
+            |_, _| {
+                attempts += 1;
+                match failures.next() {
+                    Some(&code) => Err(io::Error::from_raw_os_error(code)),
+                    None => Ok(()),
+                }
+            },
+            |d| waits.push(d),
+        );
+        (result, attempts, waits)
+    }
+
+    #[test]
+    fn write_puts_the_content_on_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fake.lock.toml");
+        super::write(&path, "version = 1\n").expect("write");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "version = 1\n"
+        );
+    }
+
+    #[test]
+    fn a_write_that_fails_for_another_reason_is_not_retried() {
+        // ENOENT on Unix, ERROR_FILE_NOT_FOUND on Windows: never transient.
+        let (result, attempts, waits) = write_failing_with(&[2]);
+        let msg = format!("{:#}", result.expect_err("must fail"));
+        assert!(msg.contains("Failed to write fake.lock.toml"), "{msg}");
+        assert_eq!(attempts, 1);
+        assert!(waits.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_held_by_a_reader_is_written_once_the_reader_lets_go() {
+        let (result, attempts, waits) = write_failing_with(&[1224, 32]);
+        result.expect("the third attempt succeeds");
+        assert_eq!(attempts, 3);
+        assert_eq!(waits, [WRITE_BACKOFF, WRITE_BACKOFF * 2]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_reader_that_never_lets_go_still_fails_after_the_last_attempt() {
+        let (result, attempts, _) = write_failing_with(&[1224; 10]);
+        let msg = format!("{:#}", result.expect_err("must give up"));
+        assert!(msg.contains("Failed to write fake.lock.toml"), "{msg}");
+        assert_eq!(attempts, WRITE_ATTEMPTS as usize);
     }
 
     #[test]
