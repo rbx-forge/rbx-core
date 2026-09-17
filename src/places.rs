@@ -17,6 +17,7 @@
 //!
 //! [prod]
 //! universe_id = 9876543211
+//! root = "lobby"            # optional: the start place, when it is not `main`
 //! [prod.places]
 //! main = 234567890123456
 //! lobby = 234567890999999
@@ -54,6 +55,7 @@ pub const ENV_KEYS: &[&str] = &[
     "universe_id",
     "env",
     "places",
+    "root",
     "owner",
     "confirm",
     "codegen",
@@ -143,6 +145,13 @@ impl EnvSelector {
         }
     }
 }
+
+/// The place key that is an env's start place when its `root` is unset.
+///
+/// `rbx import` and `rbx init create-universe` both record the start place
+/// under this name, and [`resolve`] already preferred it before `root` existed,
+/// so an env that follows the convention never needs the field.
+pub const DEFAULT_ROOT_PLACE: &str = "main";
 
 /// The file's name, and the default value of the global `--places` flag.
 pub const PLACES_FILE: &str = "rbxplace.toml";
@@ -423,6 +432,21 @@ pub struct Environment {
     #[serde(default)]
     pub places: HashMap<String, u64>,
 
+    /// Which entry of `places` is the universe's start place, when it is not
+    /// `main`.
+    ///
+    /// `rbx import` and `rbx init` write it from Roblox when they record the
+    /// env, so it only appears when the start place is recorded under another
+    /// name. `rbx env gen-module` emits the id as `rootPlaceId`, and `rbx check`
+    /// compares it against Roblox. A name that is not a key of `places` is
+    /// refused when the file loads.
+    //
+    // One field per env rather than a boolean per place: a flag can mark zero
+    // places or two, and a per-place flag would turn every one-line
+    // `places.x = id` into a table.
+    #[serde(default)]
+    pub root: Option<String>,
+
     /// Per-env owner override. When unset, callers fall back to the top-level
     /// `[owner]` (see [`PlacesFile::resolve_owner`]).
     #[serde(default)]
@@ -485,6 +509,19 @@ impl Environment {
     pub fn confirm(&self) -> bool {
         self.confirm
     }
+
+    /// The start place as `(name, id)`: `root` when set, else `main`.
+    ///
+    /// `None` when the env declares neither, which is normal for an env used
+    /// only at universe scope. Nothing here is guessed from a lone entry: a
+    /// single place called `lobby` may be a second place whose root was never
+    /// recorded, and a wrong `rootPlaceId` in game code is worse than none.
+    pub fn root_place(&self) -> Option<(&str, u64)> {
+        let name = self.root.as_deref().unwrap_or(DEFAULT_ROOT_PLACE);
+        self.places
+            .get_key_value(name)
+            .map(|(name, id)| (name.as_str(), *id))
+    }
 }
 
 impl PlacesFile {
@@ -520,8 +557,45 @@ impl PlacesFile {
             .with_context(|| format!("Failed to parse {}", path.display()))?;
         file.validate_unique_env_names(path)?;
         file.validate_groups(path)?;
+        file.validate_roots(path)?;
         file.unknown = unknown_keys(content);
         Ok(file)
+    }
+
+    /// Refuse a `root` that names none of its env's places.
+    ///
+    /// Loading it anyway would generate a module with no `rootPlaceId` for
+    /// that env and say nothing: a misspelled `root` looks honoured from the
+    /// outside, which is the failure this file's warnings exist to prevent.
+    fn validate_roots(&self, path: &Path) -> Result<()> {
+        // Sorted so the reported env does not depend on HashMap order.
+        let mut names: Vec<&str> = self.environments.keys().map(|s| s.as_str()).collect();
+        names.sort();
+
+        for name in names {
+            let env = &self.environments[name];
+            let Some(root) = env.root.as_deref() else {
+                continue;
+            };
+            if env.places.contains_key(root) {
+                continue;
+            }
+            let mut available: Vec<&str> = env.places.keys().map(|s| s.as_str()).collect();
+            available.sort();
+            bail!(
+                "{}: [{}] sets root = \"{}\", which is not one of its places.\n  \
+                 Available: {}",
+                path.display(),
+                name,
+                root,
+                if available.is_empty() {
+                    format!("none, [{name}.places] is empty")
+                } else {
+                    available.join(", ")
+                }
+            );
+        }
+        Ok(())
     }
 
     /// Refuse a `[groups]` table that cannot mean what it says.
@@ -760,8 +834,9 @@ pub fn resolve_universe_id(places_path: &Path, env: &str) -> Result<u64> {
 /// Resolve `(universe_id, place_id)` for a given env and optional place name.
 ///
 /// `place_override` picks a specific entry from `[<env>.places]`. If omitted,
-/// the function picks `main` if it exists, otherwise the only entry, otherwise
-/// errors with the list of available place names.
+/// the function picks the env's start place (`root`, else `main`) if it has
+/// one, otherwise the only entry, otherwise errors with the list of available
+/// place names.
 pub fn resolve(places_path: &Path, env: &str, place_override: Option<&str>) -> Result<(u64, u64)> {
     let places = PlacesFile::load(places_path)?;
     let environment = places.get(env)?;
@@ -769,8 +844,8 @@ pub fn resolve(places_path: &Path, env: &str, place_override: Option<&str>) -> R
     let place_name = match place_override {
         Some(p) => p,
         None => {
-            if environment.places.contains_key("main") {
-                "main"
+            if let Some((root, _)) = environment.root_place() {
+                root
             } else if environment.places.len() == 1 {
                 environment
                     .places

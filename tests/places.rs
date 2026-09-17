@@ -87,6 +87,7 @@ universe_id = 200
 confirm = true
 env = "Production"
 codegen = true
+root = "lobby"
 owner = { type = "user", id = 42 }
 [prod.places]
 main = 2001
@@ -227,6 +228,65 @@ b = 2
     let err = resolve(&path, "dev", None).unwrap_err().to_string();
     assert!(err.contains("multiple places"));
     assert!(err.contains("a, b"));
+}
+
+#[test]
+fn the_start_place_is_main_unless_root_names_another() {
+    let (_d, path) = write_places(
+        r#"
+[dev]
+universe_id = 100
+places.main = 1001
+places.lobby = 1002
+
+[prod]
+universe_id = 200
+root = "lobby"
+places.main = 2001
+places.lobby = 2002
+
+[shop_only]
+universe_id = 300
+"#,
+    );
+    let places = PlacesFile::load(&path).unwrap();
+    assert_eq!(
+        places.get("dev").unwrap().root_place(),
+        Some(("main", 1001))
+    );
+    assert_eq!(
+        places.get("prod").unwrap().root_place(),
+        Some(("lobby", 2002))
+    );
+    assert_eq!(places.get("shop_only").unwrap().root_place(), None);
+}
+
+/// A lone place is not assumed to be the start place: it may be a second
+/// place whose root was never recorded, and a wrong id is worse than none.
+#[test]
+fn a_single_place_that_is_not_main_is_not_taken_for_the_root() {
+    let (_d, path) = write_places("[dev]\nuniverse_id = 100\nplaces.lobby = 1002\n");
+    let places = PlacesFile::load(&path).unwrap();
+    assert_eq!(places.get("dev").unwrap().root_place(), None);
+}
+
+#[test]
+fn a_root_that_names_no_place_is_refused_with_the_places_that_exist() {
+    let (_d, path) = write_places(
+        "[prod]\nuniverse_id = 200\nroot = \"lobbby\"\nplaces.main = 2001\nplaces.lobby = 2002\n",
+    );
+    let err = PlacesFile::load(&path).unwrap_err().to_string();
+    assert!(err.contains("root = \"lobbby\""), "got: {err}");
+    assert!(err.contains("Available: lobby, main"), "got: {err}");
+}
+
+#[test]
+fn resolve_defaults_to_the_declared_root_over_main() {
+    let (_d, path) = write_places(
+        "[dev]\nuniverse_id = 100\nroot = \"lobby\"\nplaces.main = 1\nplaces.lobby = 2\n",
+    );
+    let (_, p) = resolve(&path, "dev", None).unwrap();
+    assert_eq!(p, 2);
 }
 
 #[test]
