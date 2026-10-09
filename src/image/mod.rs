@@ -45,6 +45,16 @@ pub fn process_bytes(bytes: &[u8], bleed: bool) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Width and height of encoded image bytes, read from the header without
+/// decoding the pixels.
+pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
+    image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .context("Failed to read image header")?
+        .into_dimensions()
+        .context("Failed to read image dimensions")
+}
+
 /// Compute the blake3 hash of processed PNG bytes. Used by domain crates to
 /// decide whether an icon changed without re-uploading.
 #[must_use]

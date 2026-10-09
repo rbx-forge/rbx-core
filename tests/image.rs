@@ -134,3 +134,14 @@ fn bleed_is_a_noop_on_image_without_transparency() {
     let with_bleed = process_bytes(&bytes, true).unwrap();
     assert_eq!(hash_bytes(&no_bleed), hash_bytes(&with_bleed));
 }
+
+/// What `rbx meta` reads to warn about a non-square icon: the header alone.
+#[test]
+fn dimensions_are_read_from_the_encoded_bytes() {
+    let img = image::RgbaImage::from_pixel(16, 9, Rgba([255, 0, 0, 255]));
+    let mut buf = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)
+        .unwrap();
+    assert_eq!(rbx_core::image::dimensions(&buf).unwrap(), (16, 9));
+}
