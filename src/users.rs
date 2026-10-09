@@ -255,6 +255,51 @@ pub async fn resolve_with_host(client: &Client, refs: &[UserRef], host: &str) ->
     Ok(out)
 }
 
+/// The most ids `POST /v1/users` accepts in one call, per the document's
+/// `maxItems` on `MultiGetByUserIdRequest.userIds`.
+const MAX_IDS_PER_LOOKUP: usize = 200;
+
+/// Names for many ids at once, for a listing that shows people.
+///
+/// One call per 200 ids, so a page of members costs one request rather than
+/// one per member, which is what [`resolve`] would do with `UserRef::Id`.
+///
+/// An id Roblox does not return is simply absent from the map. In a listing a
+/// name is a courtesy: an account that no longer exists is no reason to fail
+/// the other ninety-nine rows, and the caller still has the id to print.
+pub async fn names_for_ids_with_host(
+    client: &Client,
+    ids: &[u64],
+    host: &str,
+) -> Result<std::collections::HashMap<u64, User>> {
+    let mut out = std::collections::HashMap::with_capacity(ids.len());
+    let url = format!("{host}/v1/users");
+    for chunk in ids.chunks(MAX_IDS_PER_LOOKUP) {
+        let body = serde_json::json!({ "userIds": chunk, "excludeBannedUsers": false });
+        let response: NameLookupResponse = execute_json(|| {
+            let request = client.post(&url).json(&body);
+            async move { request.send().await.map_err(Into::into) }
+        })
+        .await?;
+        for entry in response.data {
+            out.insert(
+                entry.id,
+                User {
+                    id: entry.id,
+                    display_name: if entry.display_name.is_empty() {
+                        entry.name.clone()
+                    } else {
+                        entry.display_name
+                    },
+                    name: entry.name,
+                    has_verified_badge: entry.has_verified_badge,
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
 async fn fetch_by_id(client: &Client, host: &str, id: u64) -> Result<User> {
     let url = format!("{host}/v1/users/{id}");
     let response: UserByIdResponse = execute_json(|| {
