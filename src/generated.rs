@@ -2,7 +2,7 @@
 //!
 //! Every generator here follows the same contract: the output is a pure
 //! function of local, committed inputs (`rbxplace.toml` for `rbx env
-//! gen-module`, `rbxshop.toml` + `rbxshop.lock` for `rbx shop codegen`). That
+//! codegen`, `rbxshop.toml` + `rbxshop.lock` for `rbx shop codegen`). That
 //! purity is what makes a `--check` mode meaningful: it can re-render in
 //! memory and assert the committed file still matches, with no network and no
 //! credentials, which is what makes it usable from a git hook or from CD.
@@ -448,7 +448,7 @@ mod tests {
             .unwrap();
         report.note("the inputs may be read wrong");
         let err = report
-            .finish("rbxplace.toml", "rbx env gen-module")
+            .finish("rbxplace.toml", "rbx env codegen")
             .unwrap_err();
         let message = err.to_string();
         assert!(
@@ -478,9 +478,7 @@ mod tests {
             .check(&GeneratedFile::new(&path, "return 1\n"))
             .unwrap();
         report.note("never printed");
-        report
-            .finish("rbxplace.toml", "rbx env gen-module")
-            .unwrap();
+        report.finish("rbxplace.toml", "rbx env codegen").unwrap();
     }
 
     #[test]

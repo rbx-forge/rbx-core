@@ -485,7 +485,7 @@ universe_id = 200
 fn codegen_is_a_reserved_section_not_an_env() {
     // Without `codegen` declared as a known key, serde's flattened map would
     // try to read this table as an env and fail on the missing universe_id:
-    // breaking every command that touches rbxplace.toml, not just gen-module.
+    // breaking every command that touches rbxplace.toml, not just codegen.
     let (_d, path) = write_places(
         r#"
 [codegen]

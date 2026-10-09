@@ -338,7 +338,7 @@ fn describe_source(section: &str, resolved: &str) -> &'static str {
     }
 }
 
-/// Reserved `[codegen]` block: where `rbx env gen-module` writes its module.
+/// Reserved `[codegen]` block: where `rbx env codegen` writes its module.
 ///
 /// The path lives here rather than only in `--out` so the hook, the CI job and
 /// the developer cannot disagree about it: a `--check` pointed at a path
@@ -364,7 +364,7 @@ pub struct PlacesFile {
     #[serde(default)]
     pub owner: Option<Owner>,
 
-    /// Codegen output path for `rbx env gen-module`.
+    /// Codegen output path for `rbx env codegen`.
     #[serde(default)]
     pub codegen: Option<PlacesCodegen>,
 
@@ -396,7 +396,7 @@ pub struct PlacesFile {
     /// Keys in the file this build gives no meaning to, collected at load and
     /// already reported on stderr by [`PlacesFile::load`].
     ///
-    /// Kept on the struct rather than only printed so `gen-module --check` can
+    /// Kept on the struct rather than only printed so `codegen --check` can
     /// say that an ignored key is a candidate cause of the mismatch: the
     /// generic advice ("regenerate and commit") is wrong in exactly that case.
     #[serde(skip)]
@@ -437,7 +437,7 @@ pub struct Environment {
     ///
     /// `rbx import` and `rbx init` write it from Roblox when they record the
     /// env, so it only appears when the start place is recorded under another
-    /// name. `rbx env gen-module` emits the id as `rootPlaceId`, and `rbx check`
+    /// name. `rbx env codegen` emits the id as `rootPlaceId`, and `rbx check`
     /// compares it against Roblox. A name that is not a key of `places` is
     /// refused when the file loads.
     //
