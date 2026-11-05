@@ -4,7 +4,8 @@
 
 use anyhow::Result;
 use rbx_core::api::{
-    execute_create_with_retry_policy, execute_json, execute_with_retry_policy, RetryPolicy,
+    execute_create_with_retry_policy, execute_json, execute_with_retry_policy, is_api_status,
+    RetryPolicy,
 };
 use reqwest::Client;
 use serde::Deserialize;
@@ -83,6 +84,57 @@ async fn retry_on_429_then_success() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+/// A window far past what is worth sitting through stops at the first answer,
+/// keeps the 429 readable to callers that branch on it, and says how long.
+#[tokio::test]
+async fn a_reset_too_long_to_wait_for_fails_at_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/r"))
+        .respond_with(ResponseTemplate::new(429).insert_header("x-ratelimit-reset", "3600"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::new();
+    let url = format!("{}/r", server.uri());
+    let err = execute_with_retry_policy(|| get(&client, &url), &fast_policy())
+        .await
+        .unwrap_err();
+
+    assert!(is_api_status(&err, reqwest::StatusCode::TOO_MANY_REQUESTS));
+    assert!(err.to_string().contains("3601s"), "{err}");
+}
+
+/// A create may be resent after a 429 because Roblox refused it, and the wait
+/// comes from the same place. The reset here is the shortest there is.
+#[tokio::test]
+async fn a_429_is_retried_after_the_reset() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/r"))
+        .respond_with(ResponseTemplate::new(429).insert_header("x-ratelimit-reset", "0"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/r"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::new();
+    let url = format!("{}/r", server.uri());
+    let started = std::time::Instant::now();
+    let resp = execute_create_with_retry_policy(|| get(&client, &url), &fast_policy())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(1));
 }
 
 #[tokio::test]

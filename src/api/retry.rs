@@ -1,11 +1,12 @@
 //! Generic retry + JSON parsing wrappers around a `reqwest::Response`. Domain
 //! crates supply the request builder closure; this module handles 429/5xx
-//! retries, `retry-after` parsing, transient network failures (timeouts,
+//! retries, the server's own wait headers, transient network failures (timeouts,
 //! connection resets), and JSON deserialization with a useful error body.
 
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use reqwest::header::HeaderMap;
 use reqwest::{Response, StatusCode};
 
 use super::ApiError;
@@ -19,8 +20,8 @@ pub struct RetryPolicy {
     /// `max_retries + 1`.
     pub max_retries: u32,
     /// Backoff factor in seconds. The delay between attempt `n` and `n+1`
-    /// is `base_backoff_secs * 2^n` unless the server sent a `retry-after`
-    /// header (in which case that value wins).
+    /// is `base_backoff_secs * 2^n` unless the response says how long to wait
+    /// (`retry-after` or `x-ratelimit-reset`, which then win).
     pub base_backoff_secs: u64,
 }
 
@@ -38,6 +39,49 @@ impl RetryPolicy {
         let secs = retry_after.unwrap_or_else(|| self.base_backoff_secs << attempt);
         Duration::from_secs(secs)
     }
+}
+
+/// The longest wait the server can ask for before the command gives up instead.
+///
+/// A limit with a long window would otherwise look like a hang. Saying how long
+/// it is and stopping leaves the choice with whoever is running the command.
+const MAX_SERVER_WAIT_SECS: u64 = 120;
+
+/// A wait this long gets a line on stderr, so it does not read as a hang.
+const ANNOUNCE_WAIT_SECS: u64 = 5;
+
+/// How long the response itself says to wait, in seconds.
+///
+/// On a 429, the larger of `retry-after` and `x-ratelimit-reset`. Trusting
+/// `retry-after` alone is wrong: measured on a Roblox route with a 60 second
+/// window, a 429 carried `Retry-After: 5` and `x-ratelimit-reset: 51`, and the
+/// route reopened after 52 seconds. Retrying on the shorter figure spends every
+/// attempt inside the window. The larger one rather than the reset alone, so a
+/// route where `retry-after` is the longer of the two is still respected.
+///
+/// The reset gets one second on top because it counts whole seconds and the
+/// window closes after it, which is what that measurement showed.
+///
+/// Other statuses look at `retry-after` only: the reset describes the rate
+/// limit, and has nothing to say about a 503.
+///
+/// RFC 9110 also allows `retry-after` as an HTTP-date. Only the seconds form is
+/// parsed, and a date falls through to the exponential backoff. Roblox sends
+/// seconds, so parsing dates would buy a dependency and a clock-skew question
+/// for nothing.
+fn server_wait_secs(status: StatusCode, headers: &HeaderMap) -> Option<u64> {
+    let seconds = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+    };
+    let retry_after = seconds("retry-after");
+    if status != StatusCode::TOO_MANY_REQUESTS {
+        return retry_after;
+    }
+    let reset = seconds("x-ratelimit-reset").map(|s| s.saturating_add(1));
+    retry_after.max(reset)
 }
 
 /// Execute an HTTP request, retrying on transient failures with the default
@@ -121,18 +165,22 @@ where
                     return Err(ApiError::new(status, body).into());
                 }
 
-                // RFC 9110 allows `retry-after` as either delta-seconds or an
-                // HTTP-date. Only the seconds form is parsed; a date falls
-                // through to `unwrap_or_else` and gets the exponential
-                // backoff. Roblox sends seconds, and the fallback is a correct
-                // (if less polite) answer to a date, so parsing dates would
-                // buy a dependency and a clock-skew question for nothing.
-                let retry_after = response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok());
-                tokio::time::sleep(policy.delay_for(attempt, retry_after)).await;
+                let server_wait = server_wait_secs(status, response.headers());
+                if let Some(wait) = server_wait.filter(|w| *w > MAX_SERVER_WAIT_SECS) {
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(
+                        anyhow::Error::new(ApiError::new(status, body)).context(format!(
+                            "Roblox says this limit reopens in {wait}s, which is too long to wait \
+                         here. Run the same command again after that."
+                        )),
+                    );
+                }
+
+                let delay = policy.delay_for(attempt, server_wait);
+                if delay.as_secs() >= ANNOUNCE_WAIT_SECS {
+                    eprintln!("Rate limited by Roblox, waiting {}s...", delay.as_secs());
+                }
+                tokio::time::sleep(delay).await;
                 attempt += 1;
             }
             Err(e) => {
@@ -187,6 +235,53 @@ mod tests {
         let p = RetryPolicy::default();
         assert_eq!(p.max_retries, 3);
         assert_eq!(p.base_backoff_secs, 1);
+    }
+
+    fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(*name, value.parse().unwrap());
+        }
+        map
+    }
+
+    const TOO_MANY: StatusCode = StatusCode::TOO_MANY_REQUESTS;
+
+    /// The headers of a real 429: the short figure is the wrong one.
+    #[test]
+    fn a_429_waits_for_the_reset_when_retry_after_is_shorter() {
+        let h = headers(&[("retry-after", "5"), ("x-ratelimit-reset", "51")]);
+        assert_eq!(server_wait_secs(TOO_MANY, &h), Some(52));
+    }
+
+    #[test]
+    fn a_429_keeps_retry_after_when_it_is_the_longer_one() {
+        let h = headers(&[("retry-after", "30"), ("x-ratelimit-reset", "3")]);
+        assert_eq!(server_wait_secs(TOO_MANY, &h), Some(30));
+    }
+
+    #[test]
+    fn a_429_with_one_header_or_none_uses_what_is_there() {
+        let reset = headers(&[("x-ratelimit-reset", "10")]);
+        assert_eq!(server_wait_secs(TOO_MANY, &reset), Some(11));
+        let after = headers(&[("retry-after", "7")]);
+        assert_eq!(server_wait_secs(TOO_MANY, &after), Some(7));
+        assert_eq!(server_wait_secs(TOO_MANY, &headers(&[])), None);
+    }
+
+    /// The reset is on every response, including a 503 from an unrelated
+    /// failure, where it says nothing about when to try again.
+    #[test]
+    fn a_5xx_ignores_the_reset() {
+        let h = headers(&[("x-ratelimit-reset", "51")]);
+        assert_eq!(server_wait_secs(StatusCode::SERVICE_UNAVAILABLE, &h), None);
+    }
+
+    /// A date is a legal `retry-after`, and falls back to the backoff.
+    #[test]
+    fn a_retry_after_date_is_not_a_number_of_seconds() {
+        let h = headers(&[("retry-after", "Wed, 21 Oct 2026 07:28:00 GMT")]);
+        assert_eq!(server_wait_secs(TOO_MANY, &h), None);
     }
 
     #[test]
