@@ -108,8 +108,8 @@ pub fn explain_missing_scope(error: anyhow::Error) -> anyhow::Error {
         "The key in use does not carry that scope. `RBX_API_KEY` is a single variable \
          shared by every tool, so the usual cause is a key left over from another project \
          rather than a wrongly declared one. Check what is loaded with \
-         `rbx apikey introspect <name>`, and reload the one you meant with \
-         `export RBX_API_KEY=\"$(rbx apikey resolve <name>)\"`.",
+         `rbx-apikey introspect <name>`, and reload the one you meant with \
+         `export RBX_API_KEY=\"$(rbx-apikey resolve <name>)\"`.",
     )
 }
 
