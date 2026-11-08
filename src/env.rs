@@ -303,7 +303,7 @@ impl GlobalFlags {
     /// `.or_else` on this function's `None`, and that second site did not know
     /// about `--no-auto-cookie`. So the flag made this function return `None`
     /// and handed the decision to a function that auto-detected anyway: every
-    /// `rbx apikey` subcommand read the session cookie with no working way to
+    /// `rbx-apikey` command read the session cookie with no working way to
     /// refuse. An escape hatch that silently does not work is worse than none,
     /// because the user believes they opted out.
     ///
@@ -395,7 +395,7 @@ impl GlobalFlags {
     /// merely avoided.
     ///
     /// Tools that only need `universe_id` (rbx shop, parts of rbx meta,
-    /// rbx apikey) call this. Tools that also need `place_id` (rbx place,
+    /// rbx-apikey) call this. Tools that also need `place_id` (rbx place,
     /// rbx meta place-level fields) layer [`Self::resolve_place`] on top.
     pub fn resolve_envs(&self) -> Result<Vec<EnvTarget>> {
         let Some(value) = self.env.as_deref() else {

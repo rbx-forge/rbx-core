@@ -28,7 +28,7 @@
 //! specific place can call [`resolve`] with an optional place override.
 //!
 //! The optional top-level `[owner]` block is the single source of truth for
-//! "who owns this Roblox project". Other tools (rbx shop, rbx apikey, rbx init)
+//! "who owns this Roblox project". Other tools (rbx shop, rbx-apikey, rbx init)
 //! fall back to it when their own owner/creator field is missing. Per-env
 //! overrides under `[<env>.owner]` are allowed for the (rare) case where one
 //! env lives under a different account than the rest.
@@ -824,7 +824,7 @@ impl PlacesFile {
 }
 
 /// Resolve `universe_id` for a given env. Use this from tools that don't
-/// care about specific places (rbx shop, rbx apikey, parts of rbx meta).
+/// care about specific places (rbx shop, rbx-apikey, parts of rbx meta).
 pub fn resolve_universe_id(places_path: &Path, env: &str) -> Result<u64> {
     let places = PlacesFile::load(places_path)?;
     let environment = places.get(env)?;
