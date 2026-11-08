@@ -61,6 +61,78 @@ pub fn write(path: &Path, content: &str) -> Result<()> {
     )
 }
 
+/// Write a file that holds a credential, readable by its owner only.
+///
+/// Same retry as [`write()`]. The difference is who can read the result: a
+/// lockfile that carries an API key secret must not be readable by every other
+/// account on the machine.
+///
+/// - **Unix:** the file is created with mode `0600`, so there is no moment where
+///   it exists with the umask's default (usually `0644`). `mode` only applies at
+///   creation, so a file that already existed is tightened before the secret is
+///   written into it.
+/// - **Windows:** inheritance is removed and the current user is the only
+///   account granted access, through `icacls`. A file in a profile folder is
+///   already private by inheritance, but one on another drive (a repository on
+///   `D:\`, say) usually inherits a grant to every authenticated user. If
+///   `icacls` fails, a warning names the file and the write still succeeds: the
+///   secret is already on disk, and failing would only lose it.
+pub fn write_private(path: &Path, content: &str) -> Result<()> {
+    write_with(path, content, write_owner_only, std::thread::sleep)
+}
+
+#[cfg(unix)]
+fn write_owner_only(path: &Path, content: &str) -> io::Result<()> {
+    use std::fs::{OpenOptions, Permissions};
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.set_permissions(Permissions::from_mode(0o600))?;
+    file.write_all(content.as_bytes())
+}
+
+#[cfg(not(unix))]
+fn write_owner_only(path: &Path, content: &str) -> io::Result<()> {
+    // Create the file and restrict it before the secret goes in, so there is
+    // no moment where the content sits behind the inherited access.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    #[cfg(windows)]
+    restrict_to_current_user(path);
+    std::fs::write(path, content)
+}
+
+/// Drop inherited access and grant the current user alone, best effort.
+#[cfg(windows)]
+fn restrict_to_current_user(path: &Path) {
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    let granted = !user.is_empty()
+        && std::process::Command::new("icacls")
+            .arg(path)
+            .args(["/inheritance:r", "/grant:r"])
+            .arg(format!("{user}:(F)"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    if !granted {
+        eprintln!(
+            "warning: could not restrict {} to your account; check who can read it",
+            path.display()
+        );
+    }
+}
+
 fn write_with(
     path: &Path,
     content: &str,
@@ -469,6 +541,61 @@ mod tests {
             std::fs::read_to_string(&path).expect("read"),
             "version = 1\n"
         );
+    }
+
+    #[test]
+    fn write_private_puts_the_content_on_disk_and_replaces_an_older_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+        write_private(&path, "first, and a longer line\n").expect("write");
+        write_private(&path, "second\n").expect("rewrite");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "second\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_creates_the_file_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+        write_private(&path, "secret\n").expect("write");
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {mode:o}");
+    }
+
+    /// A file that already existed with the default mode is tightened too:
+    /// `mode()` alone would leave it alone, because it only applies at creation.
+    #[cfg(unix)]
+    #[test]
+    fn write_private_tightens_a_file_that_was_already_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+        std::fs::write(&path, "old\n").expect("seed");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        write_private(&path, "secret\n").expect("write");
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {mode:o}");
+    }
+
+    /// `icacls` marks every inherited entry `(I)`. After the write there must be
+    /// none, and the current user must still be able to read the file.
+    #[cfg(windows)]
+    #[test]
+    fn write_private_removes_inherited_access_on_windows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+        write_private(&path, "secret\n").expect("write");
+        let out = std::process::Command::new("icacls")
+            .arg(&path)
+            .output()
+            .expect("icacls runs");
+        let listing = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !listing.contains("(I)"),
+            "inherited entries remain:\n{listing}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "secret\n");
     }
 
     #[test]
