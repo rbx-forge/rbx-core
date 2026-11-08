@@ -12,10 +12,9 @@
 //! reported "shop skipped" and carried on, so the failure looked like a
 //! permissions problem rather than a filename one.
 //!
-//! **CI could not have caught it.** This workspace's CI is Linux-only, on
-//! purpose, to keep runner minutes affordable, and on Linux `?` is a legal
-//! filename character, so the same code path passes there and fails on the
-//! machine most Roblox developers use.
+//! **Linux CI could not have caught it.** On Linux `?` is a legal filename
+//! character, so the same code path passes there and fails on the machine most
+//! Roblox developers use. This crate's CI runs on Windows too for that reason.
 
 /// A display name reduced to something safe as one path component.
 ///

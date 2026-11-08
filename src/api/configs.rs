@@ -502,7 +502,7 @@ pub struct RepositoryDraft {
 ///
 /// A rule is an RPN token tree (`ConditionalRulesPayload` ->
 /// `ConditionalRuleDefinition` -> `RpnTokenDto` in the vendored spec) and
-/// nothing in this workspace reads one. So this holds raw `Json` rather than a
+/// nothing that uses this crate reads one. So this holds raw `Json` rather than a
 /// speculative mirror of those three schemas: the only thing done with a rule
 /// set here is handing it straight back to Roblox, and a mirror that stopped
 /// matching the document would not lose a field, it would delete a rule, since

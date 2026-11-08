@@ -139,7 +139,7 @@ fn ask_yes_no(_question: &str) -> Option<bool> {
 ///
 /// Without it, "`--no-auto-cookie` stops the lookup" is only assertable on a
 /// developer's machine with Studio signed in, and passes vacuously in CI, on
-/// exactly the check that was broken. Same reasoning as the workspace's
+/// exactly the check that was broken. Same reasoning as the tools'
 /// `#[cfg(test)] with_base_url` seams: the production path is unchanged and
 /// unconditional, the test build gets somewhere to stand.
 ///
@@ -164,8 +164,8 @@ fn studio_cookie() -> Option<String> {
 /// `--auto-cookie` itself and hands them over here.
 ///
 /// Still one chain rather than two: `GlobalFlags` calls this, so a binary
-/// outside the workspace asks the same question, takes the same refusals and
-/// prints the same notice as every `rbx` subcommand.
+/// that declares its own flags asks the same question, takes the same refusals
+/// and prints the same notice as one built on `GlobalFlags`.
 pub fn resolve_cookie(explicit: Option<&str>, no_auto: bool, standing_yes: bool) -> Option<String> {
     if let Some(c) = explicit {
         return Some(c.to_string());

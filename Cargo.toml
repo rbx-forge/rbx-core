@@ -1,46 +1,58 @@
 [package]
 name = "rbx-core"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
-description = "Shared infrastructure for the rbx toolkit: places resolution, env targets, Open Cloud HTTP client, auth"
-# Never published to crates.io. This workspace ships one binary through GitHub
-# releases, and these crates exist to structure it: they carry path
-# dependencies with no version requirement, which crates.io rejects outright,
-# so the marker records a fact rather than making a decision.
+version = "0.1.0"
+edition = "2021"
+# Set by a dependency, not by this crate: `image 0.25.10` declares 1.88.
+rust-version = "1.88"
+license = "MPL-2.0"
+repository = "https://github.com/rbx-forge/rbx-core"
+description = "Shared infrastructure for the rbx-forge tools: rbxplace.toml resolution, global flags, Open Cloud HTTP client, cookie handling"
+# Consumed as a git dependency pinned by tag, never from crates.io.
 publish = false
 
 [dependencies]
-anyhow.workspace = true
-clap.workspace = true
-reqwest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-toml.workspace = true
-tokio.workspace = true
-schemars = { workspace = true, optional = true }
-rbx_cookie.workspace = true
-blake3.workspace = true
-image.workspace = true
-bit-vec.workspace = true
-colored.workspace = true
-dialoguer.workspace = true
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+# rustls with the OS trust store, not native-tls: a prebuilt Linux binary must
+# not depend on the libssl the build machine had. `charset` and `http2` come
+# back by name because dropping the defaults drops them too.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "multipart",
+    "gzip",
+    "charset",
+    "http2",
+    "rustls-tls-native-roots",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# Not "full": no tokio::spawn anywhere. `macros` for the test attributes,
+# `time` for retry backoff, `sync` for the cached lookups.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
+rbx_cookie = { version = "0.1", default-features = false }
+blake3 = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+bit-vec = "0.8"
+colored = "2"
+dialoguer = "0.11"
 
 [dev-dependencies]
-tempfile.workspace = true
-wiremock.workspace = true
-# Adds to the workspace feature set, it does not replace it. `test-util` for
-# the paused-clock tests; "full" would have put fs/net/process back into the
-# unified graph for every `cargo test`, undoing the trim in the root manifest.
-tokio = { workspace = true, features = ["test-util"] }
-serde.workspace = true
+tempfile = "3"
+wiremock = "0.6"
+# `test-util` for the paused-clock retry tests.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }
 
 [features]
-# Adds `JsonSchema` to the config models. Off by default so `schemars` never
-# reaches the shipped binary; `rbx-schema` is the only thing that turns it on.
+# Adds `JsonSchema` to the config models, for tools that generate schemas.
 schema = ["dep:schemars"]
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "warn"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+todo = "warn"
+dbg_macro = "warn"
