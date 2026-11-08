@@ -188,8 +188,12 @@ pub fn resolve_cookie(explicit: Option<&str>, no_auto: bool, standing_yes: bool)
 pub struct GlobalFlags {
     /// Open Cloud API key.
     ///
-    /// Required for most Open Cloud writes; some subcommands fall back to
-    /// cookie auth. Defaults to the `RBX_API_KEY` env var.
+    /// Defaults to the `RBX_API_KEY` env var.
+    // The doc comments on these fields are the `--help` of every binary that
+    // flattens this struct, not only `rbx`. They describe the flag and stop
+    // there: no command names, no config file another tool owns. Design notes
+    // go in `//` comments, which clap does not print.
+    //
     // `hide_env_values` is not cosmetic: without it clap prints
     // `[env: RBX_API_KEY=<the actual key>]` in every `--help`, so a key leaks
     // into any pasted output, CI log or screenshot of a help page.
@@ -204,10 +208,9 @@ pub struct GlobalFlags {
 
     /// Roblox session cookie (`.ROBLOSECURITY`).
     ///
-    /// Required for legacy endpoints not yet exposed by Open Cloud (group
-    /// creation, some universe-config writes). Defaults to the `RBX_COOKIE`
-    /// env var, then to Studio auto-detection unless `--no-auto-cookie` is
-    /// set.
+    /// Only for the endpoints Open Cloud does not expose. Defaults to the
+    /// `RBX_COOKIE` env var, then to a signed-in local Studio, which is asked
+    /// for first (see `--auto-cookie`).
     #[arg(long, env = "RBX_COOKIE", hide_env_values = true, global = true)]
     pub cookie: Option<String>,
 
@@ -217,22 +220,20 @@ pub struct GlobalFlags {
 
     /// Use a locally signed-in Studio session without asking first.
     ///
-    /// Auto-detection is opt-in: a `.ROBLOSECURITY` cookie is a full-account
-    /// credential, so finding one on the machine is not the same as being
-    /// allowed to send it. Without this flag an interactive run asks once and
-    /// a non-interactive one refuses, which is what keeps CI from reaching
-    /// into a developer's session.
-    ///
-    /// This is the standing "yes". `--no-auto-cookie` is the standing "no" and
-    /// wins over it.
+    /// Without it, an interactive run asks once and a non-interactive one
+    /// refuses. `--no-auto-cookie` wins over it.
+    // Auto-detection is opt-in: a `.ROBLOSECURITY` cookie is a full-account
+    // credential, so finding one on the machine is not the same as being
+    // allowed to send it. Refusing when nobody can answer is what keeps CI
+    // from reaching into a developer's session.
     #[arg(long, global = true, conflicts_with = "no_auto_cookie")]
     pub auto_cookie: bool,
 
-    /// Target env from `rbxplace.toml` (or `all`).
+    /// Target env from `rbxplace.toml`.
     ///
-    /// Pass `all` to act on every env defined there. Omitting `--env` falls
-    /// back to per-subcommand standalone configuration (e.g. `[experience]`
-    /// in `rbxshop.toml`).
+    /// Commands that can act on several envs also take `all` or a group name;
+    /// the others refuse them. Without `--env`, a command reads its own config
+    /// when it has one.
     #[arg(long, short = 'e', global = true)]
     pub env: Option<String>,
 
@@ -253,44 +254,39 @@ pub struct GlobalFlags {
     /// Universe id, instead of naming an env.
     ///
     /// Skips `rbxplace.toml` entirely, so a command works in a directory that
-    /// has none: a one-off against a universe you have not configured, or
-    /// somebody else's game you are helping with.
-    ///
-    /// Wins over `--env` when both are given, because passing an id is the more
-    /// specific instruction of the two.
-    ///
-    /// Spelled `--universe-id` to match the per-subcommand flags it replaced.
-    /// Those were separate arguments with the same meaning, and because this
-    /// one is `global = true` clap accepted `--universe` everywhere while
-    /// `shop init` and friends read only their own: a flag with the right
-    /// value, silently ignored. `--universe` stays as an alias so no existing
-    /// invocation breaks.
+    /// has none. Wins over `--env` when both are given.
+    // Wins because passing an id is the more specific instruction of the two.
+    //
+    // Spelled `--universe-id` to match the per-subcommand flags it replaced.
+    // Those were separate arguments with the same meaning, and because this
+    // one is `global = true` clap accepted `--universe` everywhere while some
+    // subcommands read only their own: a flag with the right value, silently
+    // ignored. `--universe` stays as an alias so no existing invocation
+    // breaks.
     #[arg(long = "universe-id", alias = "universe", global = true)]
     pub universe_id: Option<u64>,
 
     /// Place id, instead of naming an env and a place.
     ///
-    /// The place-scoped counterpart of `--universe-id`, and it exists for the
-    /// same reason: a command should work in a directory with no
-    /// `rbxplace.toml`, against a place you have not configured or somebody
-    /// else's game you are helping with. Without it, everything at place scope
-    /// was tied to the file even when a place id was all the call needed:
-    /// `rbx open` reads the file, then builds a URI out of one number.
-    ///
-    /// Wins over `--env` / `--place` when both are given, because passing an id
-    /// is the more specific instruction of the two.
-    ///
-    /// **It does not inherit `confirm = true`.** That guard lives on an env in
-    /// `rbxplace.toml`, and naming a raw id resolves no env. Where the file is
-    /// present and maps this id, the env's `confirm` is honoured anyway (see
-    /// [`Self::confirm_for_place_id`]) so pointing at your own production
-    /// place by id still prompts. An id the file does not know is a place
-    /// outside the project and prompts on nothing.
-    /// Repeatable, because `rbx apikey can-manage` answers about several
-    /// places in one run and there must be exactly one spelling of "a place
-    /// id" in the tool. Commands that act on one place call
-    /// [`Self::single_place`], which refuses a repeated flag by name rather
-    /// than silently taking the first.
+    /// Skips `rbxplace.toml`, like `--universe-id`, and wins over `--env` and
+    /// `--place` when both are given. An id that `rbxplace.toml` maps to an
+    /// env with `confirm = true` still prompts; any other id does not.
+    /// Commands that act on several places take it more than once.
+    // The place-scoped counterpart of `--universe-id`, for the same reason: a
+    // command should work in a directory with no `rbxplace.toml`. Without it,
+    // everything at place scope was tied to the file even when a place id was
+    // all the call needed.
+    //
+    // The `confirm` guard lives on an env, and a raw id resolves no env. Where
+    // the file is present and maps this id, the env's `confirm` is honoured
+    // anyway (see [`Self::confirm_for_place_id`]) so pointing at your own
+    // production place by id still prompts. An id the file does not know is a
+    // place outside the project and prompts on nothing.
+    //
+    // Repeatable because some commands answer about several places in one run
+    // and there must be exactly one spelling of "a place id". Commands that
+    // act on one place call [`Self::single_place`], which refuses a repeated
+    // flag by name rather than silently taking the first.
     #[arg(long = "place-id", global = true)]
     pub place_id: Vec<u64>,
 }
