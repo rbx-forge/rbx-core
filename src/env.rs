@@ -155,6 +155,32 @@ fn studio_cookie() -> Option<String> {
     tests::studio_cookie_stub()
 }
 
+/// The cookie a run will use, from its three flags.
+///
+/// The chain [`GlobalFlags::resolve_cookie`] documents, taken apart from the
+/// struct for a binary that does not embed `GlobalFlags`: one that has no
+/// `--env` or `--place` to offer, and should not print them in its `--help`
+/// just to reach this. It declares `--cookie`, `--no-auto-cookie` and
+/// `--auto-cookie` itself and hands them over here.
+///
+/// Still one chain rather than two: `GlobalFlags` calls this, so a binary
+/// outside the workspace asks the same question, takes the same refusals and
+/// prints the same notice as every `rbx` subcommand.
+pub fn resolve_cookie(explicit: Option<&str>, no_auto: bool, standing_yes: bool) -> Option<String> {
+    if let Some(c) = explicit {
+        return Some(c.to_string());
+    }
+    if no_auto {
+        return None;
+    }
+    let cookie = studio_cookie()?;
+    if !auto_cookie_allowed(standing_yes) {
+        return None;
+    }
+    announce_auto_cookie();
+    Some(cookie)
+}
+
 /// Cross-cutting CLI flags. Every flag here is `global = true` so it can be
 /// placed either before or after the subcommand on the command line:
 /// `rbx --env prod shop sync` and `rbx shop sync --env prod` both work.
@@ -301,18 +327,11 @@ impl GlobalFlags {
     /// which is what keeps a pipeline from reaching into whoever's session the
     /// runner happens to have.
     pub fn resolve_cookie(&self) -> Option<String> {
-        if let Some(c) = &self.cookie {
-            return Some(c.clone());
-        }
-        if self.no_auto_cookie {
-            return None;
-        }
-        let cookie = studio_cookie()?;
-        if !auto_cookie_allowed(self.auto_cookie) {
-            return None;
-        }
-        announce_auto_cookie();
-        Some(cookie)
+        resolve_cookie(
+            self.cookie.as_deref(),
+            self.no_auto_cookie,
+            self.auto_cookie,
+        )
     }
 
     /// What `--env` names, resolved against `rbxplace.toml`.
@@ -646,5 +665,31 @@ mod tests {
         with_studio_cookie(None, || {
             assert!(consented().resolve_cookie().is_none());
         });
+    }
+
+    /// The free function is the chain, not a copy of it: for every
+    /// combination of the three flags, with and without a signed-in Studio, a
+    /// binary that calls it gets the answer an `rbx` subcommand gets.
+    #[test]
+    fn the_free_function_and_the_method_agree_everywhere() {
+        for studio in [None, Some("from-studio")] {
+            for explicit in [None, Some("from-flag")] {
+                for (no_auto, yes) in [(false, false), (false, true), (true, false)] {
+                    let global = GlobalFlags {
+                        cookie: explicit.map(str::to_string),
+                        no_auto_cookie: no_auto,
+                        auto_cookie: yes,
+                        ..flags()
+                    };
+                    with_studio_cookie(studio, || {
+                        assert_eq!(
+                            resolve_cookie(explicit, no_auto, yes),
+                            global.resolve_cookie(),
+                            "studio={studio:?} explicit={explicit:?} no_auto={no_auto} yes={yes}"
+                        );
+                    });
+                }
+            }
+        }
     }
 }
