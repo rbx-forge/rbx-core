@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-09
+
+### Added
+
+- `THIRD-PARTY-NOTICES.md` carries the MIT notices of the Asphalt and Tarmac code that `alpha_bleed` adapts.
+
 ## [0.1.1] - 2026-11-08
 
 ### Fixed
