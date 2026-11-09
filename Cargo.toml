@@ -1,6 +1,6 @@
 [package]
 name = "rbx-core"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 # Set by a dependency, not by this crate: `image 0.25.10` declares 1.88.
 rust-version = "1.88"
