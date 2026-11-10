@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use reqwest::header::HeaderMap;
 use reqwest::{Response, StatusCode};
 
-use super::ApiError;
+use super::{api_status, ApiError};
 
 /// Retry tuning for [`execute_with_retry`]. Defaults match what every
 /// domain crate in the suite uses today (3 retries, exponential backoff
@@ -127,6 +127,38 @@ where
     Fut: std::future::Future<Output = Result<Response>>,
 {
     execute(make_request, policy, Resend::RateLimitOnly).await
+}
+
+/// Whether a write that failed may still have been applied.
+///
+/// Roblox refusing is an answer: a 4xx, a 429 included, means nothing
+/// happened. A 5xx is no answer, and neither is a transport failure once the
+/// request has left: either can hide a write that went through. A failure to
+/// connect is the one transport failure that cannot, because nothing was sent.
+pub fn may_have_landed(error: &anyhow::Error) -> bool {
+    if api_status(error).is_some_and(|status| status.is_server_error()) {
+        return true;
+    }
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|sent| !sent.is_connect() && !sent.is_builder())
+    })
+}
+
+/// Attach `advice` to a failed write that may still have been applied.
+///
+/// For a write that must not land twice, sent through
+/// [`execute_create_with_retry_policy`]. It is not sent again, and whoever
+/// reads the error has to be told not to send it again either before checking:
+/// `advice` says how. A refusal and a failure to connect pass through as they
+/// are, since neither leaves anything to check.
+pub fn unconfirmed(error: anyhow::Error, advice: &str) -> anyhow::Error {
+    if may_have_landed(&error) {
+        error.context(advice.to_string())
+    } else {
+        error
+    }
 }
 
 /// Which failures are safe to send again.

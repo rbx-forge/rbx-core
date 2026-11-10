@@ -5,7 +5,7 @@
 use anyhow::Result;
 use rbx_core::api::{
     execute_create_with_retry_policy, execute_json, execute_with_retry_policy, is_api_status,
-    RetryPolicy,
+    may_have_landed, unconfirmed, RetryPolicy,
 };
 use reqwest::Client;
 use serde::Deserialize;
@@ -328,6 +328,90 @@ async fn a_create_is_not_resent_after_a_network_failure() {
         1,
         "a lost answer may hide a create that went through"
     );
+}
+
+/// One write through the create-only path, and the error it came back with.
+async fn failed_write(client: &Client, url: &str) -> anyhow::Error {
+    execute_create_with_retry_policy(
+        || async { Ok(client.post(url).send().await?) },
+        &fast_policy_n(0),
+    )
+    .await
+    .unwrap_err()
+}
+
+const ADVICE: &str = "read it back before running this again";
+
+/// A 5xx is Roblox not answering, which is not Roblox refusing: the write may
+/// have gone through before the answer was lost, and the reader is told.
+#[tokio::test]
+async fn a_write_answered_with_a_5xx_may_have_landed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/w"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+
+    let err = failed_write(&Client::new(), &format!("{}/w", server.uri())).await;
+
+    assert!(may_have_landed(&err), "{err:#}");
+    assert!(format!("{:#}", unconfirmed(err, ADVICE)).contains(ADVICE));
+}
+
+/// The request left and no answer came back in time: the same doubt.
+#[tokio::test]
+async fn a_write_whose_answer_never_came_may_have_landed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/slow"))
+        .respond_with(ResponseTemplate::new(200).set_delay(CLIENT_TIMEOUT * 4))
+        .mount(&server)
+        .await;
+    let client = Client::builder().timeout(CLIENT_TIMEOUT).build().unwrap();
+
+    let err = failed_write(&client, &format!("{}/slow", server.uri())).await;
+
+    assert!(may_have_landed(&err), "{err:#}");
+    assert!(format!("{:#}", unconfirmed(err, ADVICE)).contains(ADVICE));
+}
+
+/// A 4xx is an answer, and the answer is no. Telling somebody to go and check
+/// for a write Roblox has just refused would send them looking for nothing.
+#[tokio::test]
+async fn a_write_roblox_refused_did_not_land() {
+    for status in [400, 403, 429] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/w"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+
+        let err = failed_write(&Client::new(), &format!("{}/w", server.uri())).await;
+
+        assert!(!may_have_landed(&err), "{status}: {err:#}");
+        assert!(
+            !format!("{:#}", unconfirmed(err, ADVICE)).contains(ADVICE),
+            "{status}"
+        );
+    }
+}
+
+/// Nothing was sent, so nothing can have landed, whether the connection was
+/// refused at once or timed out while still being made.
+#[tokio::test]
+async fn a_write_that_never_connected_did_not_land() {
+    let client = Client::builder()
+        .connect_timeout(CLIENT_TIMEOUT)
+        .no_proxy()
+        .build()
+        .unwrap();
+
+    let err = failed_write(&client, "http://127.0.0.1:1/never").await;
+
+    assert!(!may_have_landed(&err), "{err:#}");
+    assert!(!format!("{:#}", unconfirmed(err, ADVICE)).contains(ADVICE));
 }
 
 #[tokio::test]

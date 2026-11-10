@@ -20,7 +20,7 @@ pub use csrf::{send_with_csrf, CsrfError, CsrfToken, Refusal};
 pub use error::{api_status, is_api_status, roblox_error, roblox_message, ApiError};
 pub use retry::{
     execute_create_with_retry_policy, execute_json, execute_with_retry, execute_with_retry_policy,
-    RetryPolicy,
+    may_have_landed, unconfirmed, RetryPolicy,
 };
 
 use std::time::Duration;

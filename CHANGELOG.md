@@ -4,6 +4,10 @@
 
 ## [0.1.3] - 2026-11-10
 
+### Added
+
+- `api::unconfirmed` attaches a caller's advice to a failed write that may still have been applied, and `api::may_have_landed` is the test it rests on: a 5xx, or a transport failure once the request has left. A refusal is an answer and a failure to connect sent nothing, so neither counts.
+
 ### Fixed
 
 - `lockfile::write` replaces the file in one step: the content is staged in a sibling file, flushed, and renamed over it. A run that is killed partway, or a disk that fills, leaves the lockfile as it was. Writing in place truncated it first and could leave it empty, which reads as every id it tracked never having been created. A staged copy left by a killed run is removed by the next write.
