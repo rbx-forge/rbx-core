@@ -485,6 +485,58 @@ async fn a_write_that_never_connected_did_not_land() {
     assert!(!format!("{:#}", unconfirmed(err, ADVICE)).contains(ADVICE));
 }
 
+/// An answer that the caller's side turned into an error is still an answer,
+/// except a 5xx, which is no answer whichever side reports it.
+#[tokio::test]
+async fn an_answer_turned_into_an_error_did_not_land() {
+    let server = MockServer::start().await;
+    for (route, status) in [("/bad", 400), ("/down", 503)] {
+        Mock::given(method("POST"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/loop"))
+        .respond_with(ResponseTemplate::new(307).insert_header("location", "/loop"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/garbled"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(1))
+        .build()
+        .unwrap();
+    let at = |route: &str| format!("{}{route}", server.uri());
+    let post = |route: &str| client.post(at(route)).send();
+
+    let refused = post("/bad").await.unwrap().error_for_status().unwrap_err();
+    assert!(!may_have_landed(&refused.into()), "a 400 is an answer");
+
+    let down = post("/down").await.unwrap().error_for_status().unwrap_err();
+    assert!(may_have_landed(&down.into()), "a 503 is no answer");
+
+    let redirected = post("/loop").await.unwrap_err();
+    assert!(redirected.is_redirect(), "{redirected:#}");
+    assert!(!may_have_landed(&redirected.into()), "a refused redirect");
+
+    let garbled = post("/garbled")
+        .await
+        .unwrap()
+        .json::<Payload>()
+        .await
+        .unwrap_err();
+    assert!(garbled.is_decode(), "{garbled:#}");
+    assert!(
+        !may_have_landed(&garbled.into()),
+        "a body that did not decode"
+    );
+}
+
 #[tokio::test]
 async fn execute_json_parses_valid_body() {
     let server = MockServer::start().await;
