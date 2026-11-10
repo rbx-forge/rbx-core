@@ -6,7 +6,7 @@
 //! inherits all of them at once:
 //!
 //! 1. **Refuse anything newer than this build.** A lockfile written by a newer
-//!    `rbx` is not something we can safely guess at, and parsing it as the
+//!    version of its tool is not something we can safely guess at, and parsing it as the
 //!    current version would drop or misread state without saying so. The error
 //!    names both versions and points at the real fix (upgrade) rather than
 //!    surfacing a parse failure the user cannot act on.
@@ -22,9 +22,9 @@
 //! The migration registries are empty today, and that is the point: the
 //! enforcement point has to exist *before* lockfiles are in the wild, because
 //! it is the part that cannot be retrofitted cheaply afterwards. This mirrors
-//! the project's own "an ignored key must not pass for applied" policy for
-//! `rbx env` (see `docs/env.md`): a version we silently ignore is a version we
-//! silently claim to have honoured.
+//! the warning [`crate::places`] gives for a key it does not know, on the
+//! rule that an ignored value must not pass for an applied one: a version we
+//! silently ignore is a version we silently claim to have honoured.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -666,8 +666,8 @@ impl LockfileFormat {
     fn migrate(&self, doc: &mut toml::Value, found: u32, path: &Path) -> Result<()> {
         if found > self.current {
             bail!(
-                "{} was written by a newer rbx (lockfile version {}); this build understands version {}.\n  \
-                 Fix: update rbx.\n  \
+                "{} was written by a newer version of the tool that wrote it (lockfile version {}); this build understands version {}.\n  \
+                 Fix: update that tool.\n  \
                  Refusing to continue: reading a version {} file as version {} would silently drop or misread state.",
                 path.display(),
                 found,
@@ -709,7 +709,7 @@ impl LockfileFormat {
     /// Every registered step is well-formed, single-step, and unique.
     ///
     /// Meant to be called from a crate's own test so a malformed registry fails
-    /// that crate's suite rather than a user's `rbx` run. It is cheap and has no
+    /// that crate's suite rather than a user's run. It is cheap and has no
     /// side effects, so calling it in production code is fine too.
     pub fn validate_registry(&self) -> Result<()> {
         let mut seen: Vec<u32> = Vec::with_capacity(self.migrations.len());
@@ -802,8 +802,12 @@ mod tests {
         assert!(msg.contains("version 7"), "{msg}");
         assert!(msg.contains("version 2"), "{msg}");
         assert!(
-            msg.contains("update rbx"),
+            msg.contains("update that tool"),
             "the error must point at the upgrade, not at a parse failure: {msg}"
+        );
+        assert!(
+            !msg.contains("rbx"),
+            "every tool that uses this crate shows this error, so it names none: {msg}"
         );
     }
 

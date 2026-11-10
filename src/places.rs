@@ -177,7 +177,7 @@ pub fn resolve_places_path(places: &Path, dir: &Path) -> PathBuf {
     }
 }
 
-/// A key this build of rbx gives no meaning to.
+/// A key this build of the crate gives no meaning to.
 ///
 /// Every reader of `rbxplace.toml` swallows unrecognised keys: it has to, or
 /// each tool would reject the fields the others own. That is the right parsing
@@ -212,7 +212,7 @@ fn collect_unknown(
     }
 }
 
-/// Every key in `content` that no rbx tool reads, sorted.
+/// Every key in `content` that this crate does not know, sorted.
 ///
 /// Works off the raw document rather than a deserialized struct, so it is the
 /// same answer whichever crate is loading. Only the direct children of env and
@@ -266,7 +266,7 @@ pub fn unknown_keys_warning(path: &Path, unknown: &[UnknownKey]) -> Option<Strin
     }
 
     let mut out = format!(
-        "{} {}: {} unrecognised key{}, ignored by rbx {}:\n\n",
+        "{} {}: {} unrecognised key{}, ignored by this build (rbx-core {}):\n\n",
         "warning:".yellow().bold(),
         path.display(),
         unknown.len(),
@@ -479,7 +479,7 @@ pub struct Environment {
     #[serde(default)]
     pub confirm: bool,
 
-    /// Fields no rbx tool reads, kept so an unknown key does not break
+    /// Fields this crate does not read, kept so an unknown key does not break
     /// loading. [`unknown_keys`] is what stops them being silent.
     ///
     /// In the JSON Schema this is what keeps `additionalProperties` open on an

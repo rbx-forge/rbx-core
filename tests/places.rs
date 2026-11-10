@@ -166,9 +166,14 @@ fn the_warning_names_the_key_the_table_and_what_the_table_accepts() {
         warning.contains("1 unrecognised key,"),
         "singular, not 'key(s)': {warning}"
     );
+    // The version is this crate's, which is the one whose key list decided.
     assert!(
-        warning.contains(env!("CARGO_PKG_VERSION")),
+        warning.contains(&format!("rbx-core {}", env!("CARGO_PKG_VERSION"))),
         "the version is what makes 'from a newer release' checkable: {warning}"
+    );
+    assert!(
+        !warning.contains("ignored by rbx "),
+        "every tool shows this warning, so it names none: {warning}"
     );
 }
 
