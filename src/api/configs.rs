@@ -45,6 +45,10 @@ const CONFIGS_PATH: &str = "/creator-configs-public-api/v1/configs/universes";
 const PUBLISH_UNCONFIRMED: &str = "Roblox did not confirm the publish. Check the config's \
      revisions before running this again: the publish may have gone through.";
 
+/// What a restore that may have been staged says, since it is not sent again.
+const RESTORE_UNCONFIRMED: &str = "Roblox did not confirm the restore. Read the draft back \
+     before running this again: the restore may have been staged.";
+
 /// What a draft write that may have gone through says, since it is not sent
 /// again.
 const DRAFT_UNCONFIRMED: &str = "Roblox did not confirm the draft write. Read the draft \
@@ -459,15 +463,22 @@ impl ConfigsClient {
         );
         let api_key = self.api_key.clone();
 
-        let response: RestoreResponse = execute_json(|| async {
-            Ok(self
-                .client
-                .post(&url)
-                .header("x-api-key", &api_key)
-                .send()
-                .await?)
-        })
-        .await?;
+        // Sent once: after a 5xx or a timeout the restore may have been staged,
+        // and a second one would stage it over whatever the draft holds by then.
+        let response = execute_create_with_retry_policy(
+            || async {
+                Ok(self
+                    .client
+                    .post(&url)
+                    .header("x-api-key", &api_key)
+                    .send()
+                    .await?)
+            },
+            &RetryPolicy::default(),
+        )
+        .await
+        .map_err(|error| unconfirmed(error, RESTORE_UNCONFIRMED))?;
+        let response: RestoreResponse = parse_json(response).await?;
 
         Ok(response.draft_hash)
     }
@@ -819,6 +830,32 @@ mod tests {
 
             assert!(
                 format!("{err:#}").contains("did not confirm the draft write"),
+                "{err:#}"
+            );
+        }
+
+        /// The same for a restore, which stages a revision into the draft.
+        #[tokio::test]
+        async fn a_restore_answered_with_a_5xx_is_sent_once() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(format!(
+                    "{}/revisions/rev-1/restore",
+                    repo_path(Repository::InExperienceConfig)
+                )))
+                .respond_with(ResponseTemplate::new(503))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let err = client(&server, Repository::InExperienceConfig)
+                .restore_revision(UNIVERSE, "rev-1")
+                .await
+                .expect_err("a 503 is not a restore");
+
+            assert!(is_api_status(&err, StatusCode::SERVICE_UNAVAILABLE));
+            assert!(
+                format!("{err:#}").contains("did not confirm the restore"),
                 "{err:#}"
             );
         }
