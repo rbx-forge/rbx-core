@@ -530,8 +530,18 @@ fn write_with(
 /// 1224 is a mapped section (`ERROR_USER_MAPPED_FILE`), 32 a sharing violation,
 /// 5 the access denial a pending delete or a scanner gives. On other platforms
 /// a write does not fail because someone is reading, so nothing is retried.
+///
+/// A write whose undo failed too is looked at through its wrapper: the code
+/// that stopped the write is still the one that says whether to try again, and
+/// a full rewrite that goes through is the way out of a file left inconsistent.
 fn is_transient(err: &io::Error) -> bool {
-    cfg!(windows) && matches!(err.raw_os_error(), Some(1224 | 32 | 5))
+    let code = err.raw_os_error().or_else(|| {
+        err.get_ref()?
+            .downcast_ref::<NotRestored>()?
+            .write
+            .raw_os_error()
+    });
+    cfg!(windows) && matches!(code, Some(1224 | 32 | 5))
 }
 
 /// One step of a lockfile format migration.
@@ -1348,6 +1358,32 @@ mod tests {
         result.expect("the third attempt succeeds");
         assert_eq!(attempts, 3);
         assert_eq!(waits, [WRITE_BACKOFF, WRITE_BACKOFF * 2]);
+    }
+
+    /// A transient write whose undo failed too is retried like any transient
+    /// write: the code that stopped it is not hidden by the wrapper.
+    #[cfg(windows)]
+    #[test]
+    fn a_held_file_whose_undo_failed_is_still_retried() {
+        let mut attempts = 0;
+        let result = write_with(
+            Path::new("fake.lock.toml"),
+            "version = 1\n",
+            |_, _| {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(io::Error::other(NotRestored {
+                        write: io::Error::from_raw_os_error(1224),
+                        restore: io::Error::other("the undo failed too"),
+                    }))
+                } else {
+                    Ok(())
+                }
+            },
+            |_| {},
+        );
+        result.expect("the second attempt succeeds");
+        assert_eq!(attempts, 2);
     }
 
     #[cfg(windows)]
