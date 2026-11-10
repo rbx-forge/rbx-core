@@ -85,7 +85,12 @@ pub fn write(path: &Path, content: &str) -> Result<()> {
 ///   error says the file may now be inconsistent.
 /// - A file this call created is removed if any step fails, the restriction
 ///   below included. An empty lockfile is refused for having no version; an
-///   absent one is the ordinary start.
+///   absent one is the ordinary start. It is removed only while it holds
+///   nothing but what this call wrote (nothing, or the start of its content),
+///   since another process may have opened it in the meantime and written a
+///   secret of its own. Otherwise it is left, and the error says so. What this
+///   cannot tell apart: another process that wrote exactly the start of the
+///   same content, or one that writes between the check and the removal.
 ///
 /// What this does not give is the all-or-nothing of a rename. The old content
 /// is put back only by a process that lives to do it, so a process killed
@@ -132,16 +137,50 @@ fn overwrite_with(
     write: impl FnOnce(&mut std::fs::File, &[u8]) -> io::Result<()>,
 ) -> io::Result<()> {
     let (mut file, created) = open_or_create(path)?;
-    let filled = fill(&mut file, path, created, content, restrict, write);
-    if filled.is_err() && created {
-        // There was no file, and an empty one is not the same thing: a
-        // lockfile that parses to nothing is refused, an absent one is not.
-        // So whichever step failed, the file this call created goes. Best
-        // effort: the error worth reporting is the one that stopped the write.
-        drop(file);
-        let _ = std::fs::remove_file(path);
+    let Err(err) = fill(&mut file, path, created, content, restrict, write) else {
+        return Ok(());
+    };
+    if !created {
+        return Err(err);
     }
-    filled
+    // There was no file, and an empty one is not the same thing: a lockfile
+    // that parses to nothing is refused, an absent one is not. So whichever
+    // step failed, the file this call created goes, as long as it is still
+    // provably this call's: another process may have opened it since and
+    // written a secret of its own. Best effort: the error worth reporting is
+    // the one that stopped the write.
+    drop(file);
+    match std::fs::read(path) {
+        Ok(on_disk) if content.as_bytes().starts_with(&on_disk) => {
+            let _ = std::fs::remove_file(path);
+            Err(err)
+        }
+        Err(gone) if gone.kind() == io::ErrorKind::NotFound => Err(err),
+        _ => Err(io::Error::new(err.kind(), LeftInPlace { write: err })),
+    }
+}
+
+/// A write that failed on a file it created, which was then kept because it
+/// no longer held only what the write had put in it.
+#[derive(Debug)]
+struct LeftInPlace {
+    write: io::Error,
+}
+
+impl std::fmt::Display for LeftInPlace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "the file this write created was left in place: it holds something this write did \
+             not put in it, or could not be read back to check, so another process may have \
+             written to it since",
+        )
+    }
+}
+
+impl std::error::Error for LeftInPlace {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.write)
+    }
 }
 
 /// Restrict `file` to its owner, then write `content` over what it holds, and
@@ -1224,6 +1263,51 @@ mod tests {
         overwrite_with(&path, "secret\n", restrict_to_owner, |_, _| {
             Err(io::Error::other("refused"))
         })
+        .expect_err("the write did not go through");
+
+        assert!(left_in(dir.path()).is_empty(), "{:?}", left_in(dir.path()));
+    }
+
+    /// A file this write created, then another process opened and filled with
+    /// a secret of its own before this write failed, is not this write's to
+    /// remove: it is left, and the error says why.
+    #[test]
+    fn a_new_file_another_process_wrote_to_is_left_in_place() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+
+        let err = overwrite_with(&path, "this run's secret\n", restrict_to_owner, |_, _| {
+            std::fs::write(&path, "another run's secret\n")?;
+            Err(io::Error::other("no space left"))
+        })
+        .expect_err("the write did not go through");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the file is still there"),
+            "another run's secret\n"
+        );
+        assert!(err.to_string().contains("left in place"), "{err}");
+        let cause = std::error::Error::source(&err).map(ToString::to_string);
+        assert_eq!(cause.as_deref(), Some("no space left"));
+    }
+
+    /// What this write itself put in before failing is still its own: a file
+    /// holding the start of its content goes.
+    #[test]
+    fn a_new_file_holding_part_of_this_write_is_removed() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+
+        overwrite_with(
+            &path,
+            "this run's secret\n",
+            restrict_to_owner,
+            |file, bytes| {
+                file.write_all(&bytes[..5])?;
+                Err(io::Error::other("no space left"))
+            },
+        )
         .expect_err("the write did not go through");
 
         assert!(left_in(dir.path()).is_empty(), "{:?}", left_in(dir.path()));
