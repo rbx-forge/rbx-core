@@ -58,6 +58,12 @@ const WRITE_BACKOFF: Duration = Duration::from_millis(50);
 /// lockfile as it was, never empty. A staged copy left by a run that was
 /// killed is removed by the next write.
 ///
+/// A rename needs more than a writable file, and this fails where one cannot
+/// happen: in a directory the user cannot create files in, even when the
+/// lockfile itself is writable, and on a lockfile bind-mounted on its own
+/// into a container, since a mount point cannot be renamed over. Mounting the
+/// directory that holds it works.
+///
 /// This is for a lockfile of ids, which a repository carries. A file that
 /// holds a credential goes through [`write_private`], which stages nothing.
 pub fn write(path: &Path, content: &str) -> Result<()> {
@@ -81,8 +87,14 @@ pub fn write(path: &Path, content: &str) -> Result<()> {
 ///   below included. An empty lockfile is refused for having no version; an
 ///   absent one is the ordinary start.
 ///
-/// What this does not give is the all-or-nothing of a rename: a machine that
-/// loses power during the write can leave the two contents mixed.
+/// What this does not give is the all-or-nothing of a rename. The old content
+/// is put back only by a process that lives to do it, so a process killed
+/// during the write or before the cut to length, like a machine that loses
+/// power at either moment, can leave the start of the new content followed by
+/// the end of the old. For a file this small the window is the time two
+/// system calls take. Cutting first would not close it: it would destroy part
+/// of the old content before the new one is in, and putting that back would
+/// have to grow the file again, which a full disk can refuse.
 ///
 /// Who can read the result:
 ///
