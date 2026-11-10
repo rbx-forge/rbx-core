@@ -6,7 +6,8 @@
 
 ### Fixed
 
-- `lockfile::write` and `lockfile::write_private` replace the file in one step: the content is staged in a sibling file, flushed, and renamed over it. A run that is killed partway, or a disk that fills, leaves the lockfile as it was. Writing in place truncated it first and could leave it empty, which reads as every key or id it tracked never having been created.
+- `lockfile::write` replaces the file in one step: the content is staged in a sibling file, flushed, and renamed over it. A run that is killed partway, or a disk that fills, leaves the lockfile as it was. Writing in place truncated it first and could leave it empty, which reads as every id it tracked never having been created. A staged copy left by a killed run is removed by the next write.
+- `lockfile::write_private` no longer empties the file before it writes. The content goes over the old one, the file is cut to length afterwards, and the old content is put back if a step fails, so a full disk leaves the file as it was. It is written in place on purpose: a staged copy would be a second file holding the secret, under a name the ignore rule for the first does not cover.
 
 ## [0.1.2] - 2026-11-09
 
