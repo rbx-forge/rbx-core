@@ -340,13 +340,22 @@ fn is_transient_network_error(err: &anyhow::Error) -> bool {
 /// The body is fetched as text first so deserialization errors include the
 /// raw response, which makes Open Cloud's frequent schema drift easier to
 /// diagnose.
+///
+/// The retries cover sending the request and the status it is answered with.
+/// Reading the body comes after them and is not retried: a connection that
+/// drops while the body arrives is returned as it is.
 pub async fn execute_json<T, F, Fut>(make_request: F) -> Result<T>
 where
     T: serde::de::DeserializeOwned,
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<Response>>,
 {
-    let response = execute_with_retry(make_request).await?;
+    parse_json(execute_with_retry(make_request).await?).await
+}
+
+/// Read `response`'s body and parse it as JSON, with the raw body in the error
+/// when it does not parse. Not retried, like the body read in [`execute_json`].
+pub(super) async fn parse_json<T: serde::de::DeserializeOwned>(response: Response) -> Result<T> {
     let body = response.text().await?;
     serde_json::from_str(&body)
         .map_err(|e| anyhow!("Failed to parse response: {}\nBody: {}", e, body))
