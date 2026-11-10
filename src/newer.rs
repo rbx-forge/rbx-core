@@ -34,11 +34,31 @@ pub struct Newer<'a> {
 /// refusal names as the second way out. `pull` is the command that brings
 /// those values in, spelled for the run's target and already quoted for the
 /// message: [`pull_hint_for`] builds it.
+///
+/// What a replacement that was asked for says goes to stderr, in every
+/// format: stdout carries the `--json` document.
 pub fn report(
     changed: &[Newer<'_>],
     overwrite_newer: bool,
     config: &Path,
     pull: &str,
+) -> Result<()> {
+    report_to(
+        changed,
+        overwrite_newer,
+        config,
+        pull,
+        &mut std::io::stderr(),
+    )
+}
+
+/// [`report`], with stderr injected so a test can see where the note went.
+fn report_to(
+    changed: &[Newer<'_>],
+    overwrite_newer: bool,
+    config: &Path,
+    pull: &str,
+    stderr: &mut dyn std::io::Write,
 ) -> Result<()> {
     if changed.is_empty() {
         return Ok(());
@@ -46,7 +66,10 @@ pub fn report(
     let listed = listed(changed);
 
     if overwrite_newer {
-        println!(
+        // Best effort, like `eprintln!` without the panic: a closed stderr is
+        // no reason to stop a run that was asked for.
+        let _ = writeln!(
+            stderr,
             "\n{} replacing what was changed on Roblox since the last sync or pull:{listed}",
             "--overwrite-newer:".yellow()
         );
@@ -134,10 +157,13 @@ mod tests {
         assert!(text.contains("--overwrite-newer"), "{text}");
     }
 
+    /// Asked for, the replacement goes ahead, and says what it replaces on
+    /// stderr, where it cannot land in a `--json` document.
     #[test]
-    fn asked_for_the_replacement_goes_ahead() {
+    fn asked_for_the_replacement_goes_ahead_and_says_so_on_stderr() {
         let values = values();
-        report(
+        let mut stderr = Vec::new();
+        report_to(
             &[Newer {
                 env: "prod",
                 values: &values,
@@ -145,8 +171,16 @@ mod tests {
             true,
             Path::new("rbxmeta.toml"),
             "`tool meta pull --env prod`",
+            &mut stderr,
         )
         .expect("the replacement was asked for");
+
+        let said = String::from_utf8(stderr).expect("utf-8");
+        assert!(
+            said.contains("replacing what was changed on Roblox"),
+            "{said}"
+        );
+        assert!(said.contains("[prod]"), "{said}");
     }
 
     /// The hint is a command that can be pasted, for the target the run had,

@@ -5,7 +5,7 @@
 ### Added
 
 - `api::needs_scope` puts the scope a refused call needed on top of a 403, since Roblox answers `Scope not authorized` without naming it. Any other error passes through as it is.
-- `newer`: the refusal a `sync` gives before it writes over a value changed on Roblox since the lockfile was written. `report` lists the values under their env and names both ways out (the pull, or `--overwrite-newer`), and `pull_hint_for` spells that pull for the run's target. It takes the caller's whole pull command, binary included, so the hint names the tool that is running. The name differs from the `pull_hint` that took a bare subcommand (`"meta"`), so a call written for that one fails to compile instead of printing a command with no binary in it.
+- `newer`: the refusal a `sync` gives before it writes over a value changed on Roblox since the lockfile was written. `report` lists the values under their env and names both ways out (the pull, or `--overwrite-newer`), and `pull_hint_for` spells that pull for the run's target. When `--overwrite-newer` was passed, the line that says what is replaced goes to stderr, so a `--json` document on stdout stays whole. It takes the caller's whole pull command, binary included, so the hint names the tool that is running. The name differs from the `pull_hint` that took a bare subcommand (`"meta"`), so a call written for that one fails to compile instead of printing a command with no binary in it.
 
 ### Fixed
 
