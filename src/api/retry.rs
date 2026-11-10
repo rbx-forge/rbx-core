@@ -145,24 +145,51 @@ where
 /// happened. A 5xx is no answer, and neither is a transport failure once the
 /// request has left: either can hide a write that went through. A failure to
 /// connect is the one transport failure that cannot, because nothing was sent.
+///
+/// An answer turned into an error on the caller's side is still an answer: a
+/// status from `error_for_status` (a 5xx excepted, as above), a redirect the
+/// client's policy refused, a body that could not be decoded.
 pub fn may_have_landed(error: &anyhow::Error) -> bool {
     if api_status(error).is_some_and(|status| status.is_server_error()) {
         return true;
     }
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<reqwest::Error>()
-            .is_some_and(|sent| !sent.is_connect() && !sent.is_builder())
-    })
+    reached(error) == Some(Reached::Unknown)
 }
 
-/// Whether the request never reached a connection, which is the one transport
-/// failure that provably sent nothing.
-fn never_connected(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<reqwest::Error>()
-            .is_some_and(reqwest::Error::is_connect)
+/// How far a failed request got, as its `reqwest::Error` tells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reached {
+    /// The request could not be built, so nothing was sent.
+    NotBuilt,
+    /// No connection was made, so nothing was sent.
+    NotConnected,
+    /// Roblox answered, and the answer was turned into an error here.
+    Answered,
+    /// The request left, and no answer says what became of it.
+    Unknown,
+}
+
+/// The first `reqwest::Error` in `error`'s chain, read as [`Reached`]. `None`
+/// when the chain holds none, which is an error of the caller's own.
+fn reached(error: &anyhow::Error) -> Option<Reached> {
+    let sent = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<reqwest::Error>())?;
+    // A connect timeout is a timeout too: the connection test comes first.
+    Some(if sent.is_builder() {
+        Reached::NotBuilt
+    } else if sent.is_connect() {
+        Reached::NotConnected
+    } else if sent.is_status() {
+        if sent.status().is_some_and(|status| status.is_server_error()) {
+            Reached::Unknown
+        } else {
+            Reached::Answered
+        }
+    } else if sent.is_redirect() || sent.is_decode() {
+        Reached::Answered
+    } else {
+        Reached::Unknown
     })
 }
 
@@ -189,6 +216,22 @@ enum Resend {
     OnlyWhatCannotHaveLanded,
 }
 
+impl Resend {
+    /// Whether an answer with this status is sent again.
+    fn after_status(self, status: StatusCode) -> bool {
+        status == StatusCode::TOO_MANY_REQUESTS
+            || (self == Self::AnyTransientFailure && status.is_server_error())
+    }
+
+    /// Whether a request that failed with `error` is sent again.
+    fn after_error(self, error: &anyhow::Error) -> bool {
+        match self {
+            Self::AnyTransientFailure => is_transient_network_error(error),
+            Self::OnlyWhatCannotHaveLanded => reached(error) == Some(Reached::NotConnected),
+        }
+    }
+}
+
 async fn execute<F, Fut>(
     mut make_request: F,
     policy: &RetryPolicy,
@@ -198,7 +241,6 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<Response>>,
 {
-    let ambiguous_ok = resend == Resend::AnyTransientFailure;
     let mut attempt = 0;
     loop {
         match make_request().await {
@@ -208,9 +250,7 @@ where
                     return Ok(response);
                 }
 
-                let retryable = status == StatusCode::TOO_MANY_REQUESTS
-                    || (ambiguous_ok && status.is_server_error());
-                if !retryable || attempt >= policy.max_retries {
+                if !resend.after_status(status) || attempt >= policy.max_retries {
                     let body = response.text().await.unwrap_or_default();
                     // Typed rather than formatted: callers branch on the
                     // status, and a body is free to contain digits that look
@@ -233,12 +273,7 @@ where
                 attempt += 1;
             }
             Err(e) => {
-                let resend = if ambiguous_ok {
-                    is_transient_network_error(&e)
-                } else {
-                    never_connected(&e)
-                };
-                if !resend || attempt >= policy.max_retries {
+                if !resend.after_error(&e) || attempt >= policy.max_retries {
                     return Err(e);
                 }
                 tokio::time::sleep(policy.delay_for(attempt, None)).await;
