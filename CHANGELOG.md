@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `api::needs_scope` puts the scope a refused call needed on top of a 403, since Roblox answers `Scope not authorized` without naming it. Any other error passes through as it is.
+- `newer`: the refusal a `sync` gives before it writes over a value changed on Roblox since the lockfile was written. `report` lists the values under their env and names both ways out (the pull, or `--overwrite-newer`), and `pull_hint` spells that pull for the run's target. The pull command is the caller's, binary included, so the hint names the tool that is running.
+
 ## [0.1.3] - 2026-11-10
 
 ### Added

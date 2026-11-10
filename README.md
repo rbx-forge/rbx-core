@@ -20,6 +20,7 @@ rbx-core = { git = "https://github.com/rbx-forge/rbx-core", tag = "v0.1.0" }
 | `confirm` | Prompts that refuse cleanly without a terminal |
 | `output` | One JSON document on stdout, notes on stderr |
 | `lockfile` | Versioned lockfiles, written readable by the owner only |
+| `newer` | The refusal a `sync` gives before it writes over a value changed on Roblox |
 | `generated` | Write or `--check` a generated file against the same bytes |
 | `image` | Alpha bleed before upload |
 

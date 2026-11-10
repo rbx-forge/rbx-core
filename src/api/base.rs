@@ -113,6 +113,18 @@ pub fn explain_missing_scope(error: anyhow::Error) -> anyhow::Error {
     )
 }
 
+/// Name the scope a refused call needed.
+///
+/// Roblox answers `403 Scope not authorized` without saying which scope, and
+/// the caller is the one that knows. Leaves any other error untouched.
+pub fn needs_scope(error: anyhow::Error, scope: &str, what: &str) -> anyhow::Error {
+    if super::is_api_status(&error, reqwest::StatusCode::FORBIDDEN) {
+        error.context(format!("Roblox refused {what}: the key needs `{scope}`."))
+    } else {
+        error
+    }
+}
+
 /// Percent-encode a value going into a query string.
 ///
 /// Shared because more than one crate pastes an opaque pagination token into a
@@ -239,6 +251,45 @@ mod tests {
         fn an_error_with_no_http_status_keeps_the_old_text_only_behaviour() {
             let error = anyhow::anyhow!("the key is missing the universe-datastores scope");
             assert!(explain_missing_scope(error).to_string().contains(HINT));
+        }
+    }
+
+    mod needs_scope {
+        use super::super::needs_scope;
+        use crate::api::ApiError;
+        use reqwest::StatusCode;
+
+        /// Roblox's own words say nothing of the scope; the line on top does.
+        #[test]
+        fn a_forbidden_names_the_scope_the_caller_needed() {
+            let error = anyhow::Error::from(ApiError::new(
+                StatusCode::FORBIDDEN,
+                r#"{"message":"Scope not authorized"}"#,
+            ));
+            let named = needs_scope(error, "game-pass:read", "the game pass listing");
+            assert_eq!(
+                named.to_string(),
+                "Roblox refused the game pass listing: the key needs `game-pass:read`."
+            );
+        }
+
+        /// Under the line, the status stays readable to a caller that branches
+        /// on it.
+        #[test]
+        fn the_status_survives_the_line_on_top() {
+            let error = anyhow::Error::from(ApiError::new(StatusCode::FORBIDDEN, "{}"));
+            let named = needs_scope(error, "game-pass:read", "the game pass listing");
+            assert!(crate::api::is_api_status(&named, StatusCode::FORBIDDEN));
+        }
+
+        #[test]
+        fn any_other_failure_is_left_alone() {
+            let error = anyhow::Error::from(ApiError::new(StatusCode::NOT_FOUND, "{}"));
+            let named = needs_scope(error, "game-pass:read", "the game pass listing");
+            assert!(
+                !named.to_string().contains("game-pass:read"),
+                "got: {named}"
+            );
         }
     }
 }
