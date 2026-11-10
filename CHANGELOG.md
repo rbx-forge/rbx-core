@@ -14,6 +14,7 @@
 - On Windows, `lockfile::write_private` runs `icacls` once per file per process, and again only for a file the write created, instead of on every write and every retry. A tool that saves once per key no longer starts a process per key. A file that was already there is still restricted on its first write.
 - `lockfile::write` reads the age of a file beside the lockfile only when its name is that of a staged copy. It read the metadata of every file in the directory, on every write.
 - `api::execute_create_with_retry_policy` retries a failure to connect, which sent nothing, as it retries a 429. A timeout once connected, and any other transport failure after the request left, still come back on the first occurrence, as a write that may have landed.
+- A long wait before a retry says what Roblox answered: `Rate limited by Roblox` after a 429, `Roblox answered 503 Service Unavailable, retrying` after a 5xx. Every wait called itself a rate limit, and so did the refusal to wait when the server asks for too long.
 - The doc of `lockfile::write` names where a rename cannot happen and the write fails: a directory the user cannot create files in, and a lockfile bind-mounted on its own into a container.
 - The doc of `lockfile::write_private` says that a process killed during the write, or before the file is cut to length, can leave new and old content mixed, as a power cut can.
 

@@ -214,17 +214,13 @@ where
                 let server_wait = server_wait_secs(status, response.headers());
                 if let Some(wait) = server_wait.filter(|w| *w > MAX_SERVER_WAIT_SECS) {
                     let body = response.text().await.unwrap_or_default();
-                    return Err(
-                        anyhow::Error::new(ApiError::new(status, body)).context(format!(
-                            "Roblox says this limit reopens in {wait}s, which is too long to wait \
-                         here. Run the same command again after that."
-                        )),
-                    );
+                    return Err(anyhow::Error::new(ApiError::new(status, body))
+                        .context(too_long_to_wait(status, wait)));
                 }
 
                 let delay = policy.delay_for(attempt, server_wait);
                 if delay.as_secs() >= ANNOUNCE_WAIT_SECS {
-                    eprintln!("Rate limited by Roblox, waiting {}s...", delay.as_secs());
+                    eprintln!("{}", wait_notice(status, delay.as_secs()));
                 }
                 tokio::time::sleep(delay).await;
                 attempt += 1;
@@ -243,6 +239,28 @@ where
             }
         }
     }
+}
+
+/// The line a long wait before a retry prints, saying what Roblox answered.
+///
+/// A 429 is a rate limit. A 5xx is Roblox answering with an error, and calling
+/// it a rate limit would send whoever reads it looking at their request rate.
+fn wait_notice(status: StatusCode, secs: u64) -> String {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        format!("Rate limited by Roblox, waiting {secs}s...")
+    } else {
+        format!("Roblox answered {status}, retrying in {secs}s...")
+    }
+}
+
+/// Why a retry is given up when the wait Roblox asks for is too long.
+fn too_long_to_wait(status: StatusCode, wait: u64) -> String {
+    let asked = if status == StatusCode::TOO_MANY_REQUESTS {
+        format!("Roblox says this limit reopens in {wait}s")
+    } else {
+        format!("Roblox answered {status} and asks to wait {wait}s before trying again")
+    };
+    format!("{asked}, which is too long to wait here. Run the same command again after that.")
 }
 
 /// Whether a request-closure error is something we should retry. Walks the
@@ -332,6 +350,34 @@ mod tests {
     fn a_retry_after_date_is_not_a_number_of_seconds() {
         let h = headers(&[("retry-after", "Wed, 21 Oct 2026 07:28:00 GMT")]);
         assert_eq!(server_wait_secs(TOO_MANY, &h), None);
+    }
+
+    /// A 5xx is not a rate limit, and the line a wait prints does not call it
+    /// one.
+    #[test]
+    fn a_wait_says_what_roblox_answered() {
+        assert_eq!(
+            wait_notice(TOO_MANY, 52),
+            "Rate limited by Roblox, waiting 52s..."
+        );
+        let after_a_503 = wait_notice(StatusCode::SERVICE_UNAVAILABLE, 8);
+        assert_eq!(
+            after_a_503,
+            "Roblox answered 503 Service Unavailable, retrying in 8s..."
+        );
+    }
+
+    #[test]
+    fn a_wait_too_long_says_what_roblox_answered() {
+        assert!(too_long_to_wait(TOO_MANY, 3601)
+            .starts_with("Roblox says this limit reopens in 3601s,"));
+        let after_a_503 = too_long_to_wait(StatusCode::SERVICE_UNAVAILABLE, 600);
+        assert!(
+            after_a_503.contains("503 Service Unavailable"),
+            "{after_a_503}"
+        );
+        assert!(after_a_503.contains("600s"), "{after_a_503}");
+        assert!(!after_a_503.contains("limit"), "{after_a_503}");
     }
 
     #[test]
