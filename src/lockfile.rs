@@ -608,15 +608,19 @@ fn write_with(
 /// 5 the access denial a pending delete or a scanner gives. On other platforms
 /// a write does not fail because someone is reading, so nothing is retried.
 ///
-/// A write whose undo failed too is looked at through its wrapper: the code
-/// that stopped the write is still the one that says whether to try again, and
-/// a full rewrite that goes through is the way out of a file left inconsistent.
+/// A write whose undo failed too, or whose new file was left in place, is
+/// looked at through its wrapper: the code that stopped the write is still the
+/// one that says whether to try again. A full rewrite that goes through is the
+/// way out of a file left inconsistent, and out of a new file a reader kept
+/// from being checked and removed.
 fn is_transient(err: &io::Error) -> bool {
     let code = err.raw_os_error().or_else(|| {
-        err.get_ref()?
-            .downcast_ref::<NotRestored>()?
-            .write
-            .raw_os_error()
+        let inner = err.get_ref()?;
+        let write = match inner.downcast_ref::<NotRestored>() {
+            Some(not_restored) => &not_restored.write,
+            None => &inner.downcast_ref::<LeftInPlace>()?.write,
+        };
+        write.raw_os_error()
     });
     cfg!(windows) && matches!(code, Some(1224 | 32 | 5))
 }
@@ -1551,6 +1555,31 @@ mod tests {
                     Err(io::Error::other(NotRestored {
                         write: io::Error::from_raw_os_error(1224),
                         restore: io::Error::other("the undo failed too"),
+                    }))
+                } else {
+                    Ok(())
+                }
+            },
+            |_| {},
+        );
+        result.expect("the second attempt succeeds");
+        assert_eq!(attempts, 2);
+    }
+
+    /// A held new file that could not be checked and removed is retried too:
+    /// the reader that stopped the write is the one that stopped the check.
+    #[cfg(windows)]
+    #[test]
+    fn a_held_new_file_left_in_place_is_still_retried() {
+        let mut attempts = 0;
+        let result = write_with(
+            Path::new("fake.lock.toml"),
+            "version = 1\n",
+            |_, _| {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(io::Error::other(LeftInPlace {
+                        write: io::Error::from_raw_os_error(32),
                     }))
                 } else {
                     Ok(())
