@@ -53,8 +53,9 @@ const WRITE_BACKOFF: Duration = Duration::from_millis(50);
 /// Only those transient codes are retried. A full disk or a missing directory
 /// fails on the first attempt, as before.
 ///
-/// The file is replaced in one step: see [`replace`]. An interrupted write
-/// leaves the lockfile as it was, never empty.
+/// The file is replaced in one step and never written in place: the content
+/// is staged beside it and renamed over it, so an interrupted write leaves the
+/// lockfile as it was, never empty.
 pub fn write(path: &Path, content: &str) -> Result<()> {
     write_with(
         path,
