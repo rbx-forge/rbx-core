@@ -302,32 +302,103 @@ async fn a_create_is_not_resent_after_a_5xx() {
     assert!(err.contains("503"), "{err}");
 }
 
+/// The request left and the answer did not come back in time: the create may
+/// exist, so it is not sent again.
 #[tokio::test]
-async fn a_create_is_not_resent_after_a_network_failure() {
-    let calls = Arc::new(AtomicU32::new(0));
-    let calls_clone = calls.clone();
+async fn a_create_is_not_resent_once_the_request_has_left() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/slow"))
+        .respond_with(ResponseTemplate::new(200).set_delay(CLIENT_TIMEOUT * 4))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::builder().timeout(CLIENT_TIMEOUT).build().unwrap();
+    let url = format!("{}/slow", server.uri());
+    let calls = AtomicU32::new(0);
 
-    let result = execute_create_with_retry_policy(
+    let err = execute_create_with_retry_policy(
         || {
-            calls_clone.fetch_add(1, Ordering::SeqCst);
-            async {
-                Ok(Client::new()
-                    .post("http://127.0.0.1:1/never")
-                    .timeout(CLIENT_TIMEOUT)
-                    .send()
-                    .await?)
-            }
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(client.post(&url).send().await?) }
         },
         &fast_policy_n(2),
     )
-    .await;
+    .await
+    .unwrap_err();
 
-    assert!(result.is_err());
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
         "a lost answer may hide a create that went through"
     );
+    assert!(may_have_landed(&err), "{err:#}");
+}
+
+/// A client that cannot connect: refused at once, or timed out while the
+/// connection was still being made. Either way nothing was sent.
+fn unconnectable_client() -> Client {
+    Client::builder()
+        .connect_timeout(CLIENT_TIMEOUT)
+        .no_proxy()
+        .build()
+        .unwrap()
+}
+
+/// Nothing was sent, so sending again cannot make a second one: the create is
+/// retried, and lands once.
+#[tokio::test]
+async fn a_create_that_could_not_connect_is_sent_again() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/c"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let unconnectable = unconnectable_client();
+    let client = Client::new();
+    let url = format!("{}/c", server.uri());
+    let calls = AtomicU32::new(0);
+
+    let resp = execute_create_with_retry_policy(
+        || {
+            let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
+            let (client, url) = if first {
+                (&unconnectable, "http://127.0.0.1:1/never")
+            } else {
+                (&client, url.as_str())
+            };
+            async move { Ok(client.post(url).send().await?) }
+        },
+        &fast_policy_n(2),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+/// A create that never connects spends the budget, and comes back as one
+/// that did not land.
+#[tokio::test]
+async fn a_create_that_never_connects_spends_the_budget_and_did_not_land() {
+    let client = unconnectable_client();
+    let calls = AtomicU32::new(0);
+
+    let err = execute_create_with_retry_policy(
+        || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(client.post("http://127.0.0.1:1/never").send().await?) }
+        },
+        &fast_policy_n(2),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
+    assert!(!may_have_landed(&err), "{err:#}");
 }
 
 /// One write through the create-only path, and the error it came back with.

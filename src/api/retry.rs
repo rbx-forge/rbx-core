@@ -111,13 +111,16 @@ where
     execute(make_request, policy, Resend::AnyTransientFailure).await
 }
 
-/// For a request that must not land twice: retries on HTTP 429 only.
+/// For a request that must not land twice: retries on HTTP 429 and on a
+/// failure to connect, and on nothing else.
 ///
-/// A 429 is Roblox refusing before doing anything, so sending again cannot
-/// apply the request a second time. A 5xx or a timeout carries no such
-/// promise: the create may have gone through before the answer was lost, and
-/// resending it makes a second developer product or pass that cannot be
-/// deleted. Those come back to the caller on the first occurrence.
+/// A 429 is Roblox refusing before doing anything, and a failure to connect
+/// sent nothing, so sending again cannot apply the request a second time. A
+/// 5xx, a timeout once connected, or any other transport failure after the
+/// request left carries no such promise: the create may have gone through
+/// before the answer was lost, and resending it makes a second developer
+/// product or pass that cannot be deleted. Those come back to the caller on
+/// the first occurrence. The two sides are the ones [`may_have_landed`] draws.
 pub async fn execute_create_with_retry_policy<F, Fut>(
     make_request: F,
     policy: &RetryPolicy,
@@ -126,7 +129,7 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<Response>>,
 {
-    execute(make_request, policy, Resend::RateLimitOnly).await
+    execute(make_request, policy, Resend::OnlyWhatCannotHaveLanded).await
 }
 
 /// Whether a write that failed may still have been applied.
@@ -143,6 +146,16 @@ pub fn may_have_landed(error: &anyhow::Error) -> bool {
         cause
             .downcast_ref::<reqwest::Error>()
             .is_some_and(|sent| !sent.is_connect() && !sent.is_builder())
+    })
+}
+
+/// Whether the request never reached a connection, which is the one transport
+/// failure that provably sent nothing.
+fn never_connected(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_connect)
     })
 }
 
@@ -165,7 +178,8 @@ pub fn unconfirmed(error: anyhow::Error, advice: &str) -> anyhow::Error {
 #[derive(Clone, Copy, PartialEq)]
 enum Resend {
     AnyTransientFailure,
-    RateLimitOnly,
+    /// A 429, or a failure to connect.
+    OnlyWhatCannotHaveLanded,
 }
 
 async fn execute<F, Fut>(
@@ -216,8 +230,12 @@ where
                 attempt += 1;
             }
             Err(e) => {
-                if !ambiguous_ok || !is_transient_network_error(&e) || attempt >= policy.max_retries
-                {
+                let resend = if ambiguous_ok {
+                    is_transient_network_error(&e)
+                } else {
+                    never_connected(&e)
+                };
+                if !resend || attempt >= policy.max_retries {
                     return Err(e);
                 }
                 tokio::time::sleep(policy.delay_for(attempt, None)).await;
