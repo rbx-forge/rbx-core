@@ -27,7 +27,7 @@
 //! silently claim to have honoured.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -52,68 +52,187 @@ const WRITE_BACKOFF: Duration = Duration::from_millis(50);
 ///
 /// Only those transient codes are retried. A full disk or a missing directory
 /// fails on the first attempt, as before.
+///
+/// The file is replaced in one step: see [`replace`]. An interrupted write
+/// leaves the lockfile as it was, never empty.
 pub fn write(path: &Path, content: &str) -> Result<()> {
     write_with(
         path,
         content,
-        |p, c| std::fs::write(p, c),
+        |p, c| replace(p, c, Access::AsBefore),
         std::thread::sleep,
     )
 }
 
 /// Write a file that holds a credential, readable by its owner only.
 ///
-/// Same retry as [`write()`]. The difference is who can read the result: a
-/// lockfile that carries an API key secret must not be readable by every other
-/// account on the machine.
+/// Same retry and same one-step replacement as [`write()`]. The difference is
+/// who can read the result: a lockfile that carries an API key secret must not
+/// be readable by every other account on the machine.
 ///
 /// - **Unix:** the file is created with mode `0600`, so there is no moment where
-///   it exists with the umask's default (usually `0644`). `mode` only applies at
-///   creation, so a file that already existed is tightened before the secret is
-///   written into it.
+///   it exists with the umask's default (usually `0644`). A file that already
+///   existed with a wider mode is replaced by one that has `0600`.
 /// - **Windows:** inheritance is removed and the current user is the only
 ///   account granted access, through `icacls`. A file in a profile folder is
 ///   already private by inheritance, but one on another drive (a repository on
 ///   `D:\`, say) usually inherits a grant to every authenticated user. If
-///   `icacls` fails, a warning names the file and the write still succeeds: the
-///   secret is already on disk, and failing would only lose it.
+///   `icacls` fails, a warning names the file and the write still succeeds:
+///   failing would lose a secret Roblox shows only once.
 pub fn write_private(path: &Path, content: &str) -> Result<()> {
-    write_with(path, content, write_owner_only, std::thread::sleep)
+    write_with(
+        path,
+        content,
+        |p, c| replace(p, c, Access::OwnerOnly),
+        std::thread::sleep,
+    )
+}
+
+/// Who may read the file a write leaves behind.
+#[derive(Clone, Copy, Debug)]
+enum Access {
+    /// As the file it replaces, or the platform's default for a new one.
+    AsBefore,
+    /// The owner alone: the file holds a credential.
+    OwnerOnly,
+}
+
+/// Replace `path` with `content` in one step.
+///
+/// The content is written to a sibling file, flushed to disk, and renamed over
+/// `path`. A rename within one directory is atomic, so a run that is killed
+/// partway, or a disk that fills, leaves the file exactly as it was. Writing
+/// in place truncated it first: the same interruption left it empty, and to a
+/// lockfile empty means every resource it tracked was never created.
+///
+/// The sibling is given its final access before anything is written to it, so
+/// there is no moment where a credential sits behind wider access than the
+/// finished file has.
+fn replace(path: &Path, content: &str, access: Access) -> io::Result<()> {
+    replace_with(path, content, access, |from, to| std::fs::rename(from, to))
+}
+
+/// [`replace`], with the rename injected so a test can interrupt the write at
+/// the one point where it matters.
+fn replace_with(
+    path: &Path,
+    content: &str,
+    access: Access,
+    rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    // Through a symlink, the file to replace is the one it points at: renaming
+    // over the link would swap the link for a regular file.
+    let target = if path.is_symlink() {
+        std::fs::canonicalize(path)?
+    } else {
+        path.to_path_buf()
+    };
+    let sibling = sibling_of(&target);
+
+    let written =
+        write_sibling(&sibling, &target, content, access).and_then(|()| rename(&sibling, &target));
+    match written {
+        Ok(()) => {
+            sync_parent(&target);
+            Ok(())
+        }
+        Err(err) => {
+            // Best effort: the error worth reporting is the one that stopped
+            // the write, not a failure to tidy up after it.
+            let _ = std::fs::remove_file(&sibling);
+            Err(err)
+        }
+    }
+}
+
+/// The file the content is staged in: beside `target`, so the rename never
+/// crosses a volume, and named after this process, so two runs in one
+/// directory do not stage into each other's file.
+fn sibling_of(target: &Path) -> PathBuf {
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    target.with_file_name(format!(".{name}.{}.tmp", std::process::id()))
+}
+
+fn write_sibling(sibling: &Path, target: &Path, content: &str, access: Access) -> io::Result<()> {
+    use std::io::Write;
+
+    // One left behind by a run that died is stale by definition.
+    let _ = std::fs::remove_file(sibling);
+    let mut file = create_sibling(sibling, target, access)?;
+    file.write_all(content.as_bytes())?;
+    // On disk before the rename. A rename that lands ahead of the data it
+    // names is how a crash swaps a whole file for an empty one.
+    file.sync_all()
 }
 
 #[cfg(unix)]
-fn write_owner_only(path: &Path, content: &str) -> io::Result<()> {
+fn create_sibling(sibling: &Path, target: &Path, access: Access) -> io::Result<std::fs::File> {
     use std::fs::{OpenOptions, Permissions};
-    use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.set_permissions(Permissions::from_mode(0o600))?;
-    file.write_all(content.as_bytes())
+    let mode = match access {
+        Access::OwnerOnly => Some(0o600),
+        // The mode the file had, so one somebody tightened stays tightened. A
+        // new file takes the umask's default.
+        Access::AsBefore => std::fs::metadata(target)
+            .ok()
+            .map(|meta| meta.permissions().mode() & 0o777),
+    };
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    if let Some(mode) = mode {
+        options.mode(mode);
+    }
+    let file = options.open(sibling)?;
+    if let Some(mode) = mode {
+        // `mode` is filtered by the umask at creation: set it outright.
+        file.set_permissions(Permissions::from_mode(mode))?;
+    }
+    Ok(file)
 }
 
 #[cfg(not(unix))]
-fn write_owner_only(path: &Path, content: &str) -> io::Result<()> {
-    // Create the file and restrict it before the secret goes in, so there is
-    // no moment where the content sits behind the inherited access.
-    std::fs::OpenOptions::new()
+fn create_sibling(sibling: &Path, target: &Path, access: Access) -> io::Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
+        .create_new(true)
+        .open(sibling)?;
+    // Restricted while still empty. The access list travels with the file
+    // through the rename.
     #[cfg(windows)]
-    restrict_to_current_user(path);
-    std::fs::write(path, content)
+    if matches!(access, Access::OwnerOnly) {
+        restrict_to_current_user(sibling, target);
+    }
+    #[cfg(not(windows))]
+    let _ = (target, access);
+    Ok(file)
 }
 
+/// Flush the directory entry the rename wrote, best effort: without it the
+/// rename itself can be lost to a power cut on some filesystems.
+#[cfg(unix)]
+fn sync_parent(target: &Path) {
+    let parent = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_target: &Path) {}
+
 /// Drop inherited access and grant the current user alone, best effort.
+///
+/// `shown` is the file the user knows: the one being restricted is its
+/// sibling, about to be renamed over it.
 #[cfg(windows)]
-fn restrict_to_current_user(path: &Path) {
+fn restrict_to_current_user(path: &Path, shown: &Path) {
     let user = std::env::var("USERNAME").unwrap_or_default();
     let granted = !user.is_empty()
         && std::process::Command::new("icacls")
@@ -128,7 +247,7 @@ fn restrict_to_current_user(path: &Path) {
     if !granted {
         eprintln!(
             "warning: could not restrict {} to your account; check who can read it",
-            path.display()
+            shown.display()
         );
     }
 }
@@ -392,7 +511,7 @@ mod tests {
         }
     }
 
-    fn write(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    fn write(content: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("fake.lock.toml");
         std::fs::write(&path, content).expect("write");
@@ -596,6 +715,121 @@ mod tests {
             "inherited entries remain:\n{listing}"
         );
         assert_eq!(std::fs::read_to_string(&path).expect("read"), "secret\n");
+    }
+
+    /// The names in `dir`, sorted: what a write left behind.
+    fn left_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("read the directory")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The reason for the sibling file. Written in place, an interruption
+    /// after the truncate left the lockfile empty, and an empty lockfile means
+    /// every key or id it tracked reads as never created.
+    #[test]
+    fn a_write_interrupted_before_it_lands_leaves_the_file_as_it_was() {
+        let (dir, path) = write("version = 1\nvalue = \"kept\"\n");
+
+        let err = replace_with(&path, "version = 1\n", Access::AsBefore, |_, _| {
+            Err(io::Error::other("interrupted"))
+        })
+        .expect_err("the write did not land");
+
+        assert_eq!(err.to_string(), "interrupted");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "version = 1\nvalue = \"kept\"\n"
+        );
+        assert_eq!(
+            left_in(dir.path()),
+            ["fake.lock.toml"],
+            "the staged copy is removed"
+        );
+    }
+
+    #[test]
+    fn a_write_leaves_nothing_beside_the_file() {
+        let (dir, path) = write("version = 1\n");
+
+        super::write(&path, "version = 2\n").expect("write");
+        write_private(&path, "version = 3\n").expect("write");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "version = 3\n"
+        );
+        assert_eq!(left_in(dir.path()), ["fake.lock.toml"]);
+    }
+
+    /// A run that died between staging and renaming leaves its sibling behind,
+    /// and the next run of the same process id must not trip on it.
+    #[test]
+    fn a_staged_copy_left_by_a_dead_run_does_not_stop_the_next_write() {
+        let (dir, path) = write("version = 1\n");
+        std::fs::write(sibling_of(&path), "half a file").expect("seed the stale sibling");
+
+        super::write(&path, "version = 2\n").expect("write");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "version = 2\n"
+        );
+        assert_eq!(left_in(dir.path()), ["fake.lock.toml"]);
+    }
+
+    /// The staged copy sits beside the file, so the rename never crosses a
+    /// volume, which is the one case where a rename stops being atomic.
+    #[test]
+    fn the_staged_copy_sits_beside_the_file() {
+        let sibling = sibling_of(Path::new("some/dir/fake.lock.toml"));
+
+        assert_eq!(sibling.parent(), Some(Path::new("some/dir")));
+        let name = sibling.file_name().expect("a name").to_string_lossy();
+        assert!(name.starts_with(".fake.lock.toml."), "{name}");
+        assert!(name.ends_with(".tmp"), "{name}");
+    }
+
+    /// A lockfile somebody tightened by hand stays tightened: the new file
+    /// takes the mode of the one it replaces.
+    #[cfg(unix)]
+    #[test]
+    fn write_keeps_the_mode_of_the_file_it_replaces() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, path) = write("version = 1\n");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).expect("chmod");
+
+        super::write(&path, "version = 2\n").expect("write");
+
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+        assert_eq!(mode & 0o777, 0o640, "mode was {mode:o}");
+    }
+
+    /// Renaming over a symlink would swap the link for a regular file. The
+    /// file written is the one the link points at, and the link stays.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_through_a_symlink_replaces_the_file_it_points_at() {
+        let (dir, real) = write("version = 1\n");
+        let link = dir.path().join("link.lock.toml");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        super::write(&link, "version = 2\n").expect("write");
+
+        assert!(link.is_symlink(), "the link is still a link");
+        assert_eq!(
+            std::fs::read_to_string(&real).expect("read"),
+            "version = 2\n"
+        );
     }
 
     #[test]
