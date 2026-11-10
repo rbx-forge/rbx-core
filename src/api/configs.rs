@@ -33,9 +33,23 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use super::{execute_json, is_api_status, ApiBase};
+use super::retry::parse_json;
+use super::{
+    execute_create_with_retry_policy, execute_json, is_api_status, unconfirmed, ApiBase,
+    RetryPolicy,
+};
 
 const CONFIGS_PATH: &str = "/creator-configs-public-api/v1/configs/universes";
+
+/// What a publish that may have gone through says, since it is not sent again.
+const PUBLISH_UNCONFIRMED: &str = "Roblox did not confirm the publish. Check the config's \
+     revisions before running this again: the publish may have gone through.";
+
+/// What a draft write that may have gone through says, since it is not sent
+/// again.
+const DRAFT_UNCONFIRMED: &str = "Roblox did not confirm the draft write. Read the draft \
+     back before running this again: the write may have gone through, and the draft hash it \
+     was guarded by may no longer be current.";
 
 /// A configs repository, as the `{repository}` path segment spells it.
 ///
@@ -290,17 +304,24 @@ impl ConfigsClient {
             conditional_rules,
         })?;
 
-        execute_json(|| async {
-            Ok(self
-                .client
-                .put(&url)
-                .header("x-api-key", &api_key)
-                .header("Content-Type", "application/json")
-                .body(body.clone())
-                .send()
-                .await?)
-        })
+        // Sent once: after a 5xx or a timeout the write may have landed, and a
+        // second one would be refused on the hash it moved, or apply twice.
+        let response = execute_create_with_retry_policy(
+            || async {
+                Ok(self
+                    .client
+                    .put(&url)
+                    .header("x-api-key", &api_key)
+                    .header("Content-Type", "application/json")
+                    .body(body.clone())
+                    .send()
+                    .await?)
+            },
+            &RetryPolicy::default(),
+        )
         .await
+        .map_err(|error| unconfirmed(error, DRAFT_UNCONFIRMED))?;
+        parse_json(response).await
     }
 
     pub async fn publish(
@@ -318,17 +339,24 @@ impl ConfigsClient {
             draft_hash,
         })?;
 
-        execute_json(|| async {
-            Ok(self
-                .client
-                .post(&url)
-                .header("x-api-key", &api_key)
-                .header("Content-Type", "application/json")
-                .body(body.clone())
-                .send()
-                .await?)
-        })
+        // Sent once: after a 5xx or a timeout the publish may have landed, and
+        // a second one would publish again.
+        let response = execute_create_with_retry_policy(
+            || async {
+                Ok(self
+                    .client
+                    .post(&url)
+                    .header("x-api-key", &api_key)
+                    .header("Content-Type", "application/json")
+                    .body(body.clone())
+                    .send()
+                    .await?)
+            },
+            &RetryPolicy::default(),
+        )
         .await
+        .map_err(|error| unconfirmed(error, PUBLISH_UNCONFIRMED))?;
+        parse_json(response).await
     }
 
     /// Stage the entries and publish them, guarding against a concurrent draft.
@@ -739,6 +767,82 @@ mod tests {
 
         fn client(server: &MockServer, repository: Repository) -> ConfigsClient {
             ConfigsClient::new("test-key".into(), repository).with_base_url(server.uri())
+        }
+
+        /// A 503 is no answer: the publish may have gone through, so it is
+        /// sent once, and the error says to check before running it again.
+        #[tokio::test]
+        async fn a_publish_answered_with_a_5xx_is_sent_once() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(format!(
+                    "{}/publish",
+                    repo_path(Repository::InExperienceConfig)
+                )))
+                .respond_with(ResponseTemplate::new(503))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let err = client(&server, Repository::InExperienceConfig)
+                .publish(UNIVERSE, "message", "Immediate", Some("aaaaBBBBccccDDDD"))
+                .await
+                .expect_err("a 503 is not a publish");
+
+            assert!(is_api_status(&err, StatusCode::SERVICE_UNAVAILABLE));
+            assert!(
+                format!("{err:#}").contains("did not confirm the publish"),
+                "{err:#}"
+            );
+        }
+
+        /// The same for the draft write, which a second attempt could apply
+        /// twice or have refused on the hash the first one moved.
+        #[tokio::test]
+        async fn a_draft_write_answered_with_a_5xx_is_sent_once() {
+            let server = MockServer::start().await;
+            Mock::given(method("PUT"))
+                .and(path(format!(
+                    "{}/draft:overwrite",
+                    repo_path(Repository::InExperienceConfig)
+                )))
+                .respond_with(ResponseTemplate::new(503))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let entries = BTreeMap::from([("key".to_string(), Json::from(1))]);
+            let err = client(&server, Repository::InExperienceConfig)
+                .overwrite_draft(UNIVERSE, &entries, Some("aaaaBBBBccccDDDD"), None)
+                .await
+                .expect_err("a 503 is not a draft write");
+
+            assert!(
+                format!("{err:#}").contains("did not confirm the draft write"),
+                "{err:#}"
+            );
+        }
+
+        /// A refusal is an answer: no advice to go and check.
+        #[tokio::test]
+        async fn a_refused_publish_carries_no_advice_to_check() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(format!(
+                    "{}/publish",
+                    repo_path(Repository::InExperienceConfig)
+                )))
+                .respond_with(ResponseTemplate::new(409))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let err = client(&server, Repository::InExperienceConfig)
+                .publish(UNIVERSE, "message", "Immediate", None)
+                .await
+                .expect_err("a 409 is a refusal");
+
+            assert!(!format!("{err:#}").contains("did not confirm"), "{err:#}");
         }
 
         /// The starting state, not a failure: a universe that has never
