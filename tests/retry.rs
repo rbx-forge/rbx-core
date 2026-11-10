@@ -625,9 +625,9 @@ async fn connect_errors_are_retried_until_the_budget_is_exhausted() {
 #[tokio::test]
 async fn a_reqwest_error_that_is_not_a_network_flake_is_not_retried() {
     // The case the old name of the test above promised. The classifier walks
-    // the source chain for a `reqwest::Error` and retries only `is_timeout()`
-    // or `is_connect()`. A malformed URL yields a real `reqwest::Error` that is
-    // neither, and retrying it would only fail identically twice more.
+    // the source chain for a `reqwest::Error` and retries a transport failure.
+    // A malformed URL yields a real `reqwest::Error` that is a builder error,
+    // and retrying it would only fail identically twice more.
     let calls = Arc::new(AtomicU32::new(0));
     let calls_clone = calls.clone();
 
@@ -646,6 +646,132 @@ async fn a_reqwest_error_that_is_not_a_network_flake_is_not_retried() {
         1,
         "a builder error is permanent; the retry budget should go untouched"
     );
+}
+
+/// A server that reads the request on each of the first `drop_first`
+/// connections and closes it without a word, then answers `200 ok` on the
+/// next one. What a keep-alive connection the server gave up on looks like
+/// from the client: the request left, and the connection closed before the
+/// answer. Returns the base URL and the count of requests it read.
+fn closes_then_answers(drop_first: u32) -> (String, Arc<AtomicU32>) {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(AtomicU32::new(0));
+    let counted = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            // The whole head, so the request has provably arrived.
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut byte) {
+                    Ok(1) => head.push(byte[0]),
+                    _ => break,
+                }
+            }
+            let n = counted.fetch_add(1, Ordering::SeqCst);
+            if n >= drop_first {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok",
+                );
+            }
+            // Dropped here: closed, with or without an answer.
+        }
+    });
+    (url, seen)
+}
+
+/// The request reached the server and the connection closed before the
+/// answer. Safe to send again for a request that may land twice, so it is.
+#[tokio::test]
+async fn a_connection_closed_before_the_answer_is_retried() {
+    let (url, seen) = closes_then_answers(1);
+    let client = Client::builder().no_proxy().build().unwrap();
+    let url = format!("{url}/r");
+
+    let resp = execute_with_retry_policy(|| get(&client, &url), &fast_policy_n(2))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "ok");
+    assert_eq!(
+        seen.load(Ordering::SeqCst),
+        2,
+        "dropped once, answered once"
+    );
+}
+
+/// The same failure on a create: the request arrived, so it may have been
+/// applied, and it is not sent again.
+#[tokio::test]
+async fn a_create_whose_connection_closed_before_the_answer_is_not_resent() {
+    let (url, seen) = closes_then_answers(1);
+    let client = Client::builder().no_proxy().build().unwrap();
+
+    let err = execute_create_with_retry_policy(
+        || async { Ok(client.post(format!("{url}/c")).send().await?) },
+        &fast_policy_n(2),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
+    assert!(may_have_landed(&err), "{err:#}");
+}
+
+/// A redirect the client's policy refuses is refused again on every attempt.
+#[tokio::test]
+async fn a_refused_redirect_is_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/loop"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/loop"))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(1))
+        .build()
+        .unwrap();
+    let url = format!("{}/loop", server.uri());
+    let calls = AtomicU32::new(0);
+
+    let err = execute_with_retry_policy(
+        || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            get(&client, &url)
+        },
+        &fast_policy_n(2),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "{err:#}");
+}
+
+/// A status a closure turned into an error is an answer, not a transport
+/// failure.
+#[tokio::test]
+async fn a_status_turned_into_an_error_is_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/r"))
+        .respond_with(ResponseTemplate::new(400))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new();
+    let url = format!("{}/r", server.uri());
+
+    execute_with_retry_policy(
+        || async { Ok(client.get(&url).send().await?.error_for_status()?) },
+        &fast_policy_n(2),
+    )
+    .await
+    .unwrap_err();
 }
 
 #[tokio::test]
