@@ -33,7 +33,7 @@ pub struct Newer<'a> {
 /// `overwrite_newer` is the caller's `--overwrite-newer` flag, which the
 /// refusal names as the second way out. `pull` is the command that brings
 /// those values in, spelled for the run's target and already quoted for the
-/// message: [`pull_hint`] builds it.
+/// message: [`pull_hint_for`] builds it.
 pub fn report(
     changed: &[Newer<'_>],
     overwrite_newer: bool,
@@ -75,12 +75,18 @@ fn listed(changed: &[Newer<'_>]) -> String {
 
 /// The `pull` that brings newer values in, for the envs that have them.
 ///
-/// `pull` is the calling tool's pull command as a user types it, binary
-/// included (`<tool> meta pull`), since only the caller knows which binary it
-/// is. `standalone` is the flags that name a target outside `rbxplace.toml`
-/// when the run had one, and `default_env` the name a tool gives the env of
-/// such a run.
-pub fn pull_hint(pull: &str, envs: &[&str], default_env: &str, standalone: Option<&str>) -> String {
+/// `pull_command` is the calling tool's pull command as a user types it,
+/// binary included (`<tool> meta pull`), since only the caller knows which
+/// binary it is. `standalone` is the flags that name a target outside
+/// `rbxplace.toml` when the run had one, and `default_env` the name a tool
+/// gives the env of such a run.
+pub fn pull_hint_for(
+    pull_command: &str,
+    envs: &[&str],
+    default_env: &str,
+    standalone: Option<&str>,
+) -> String {
+    let pull = pull_command;
     match envs {
         [env] if *env != default_env => format!("`{pull} --env {env}`"),
         [_] => match standalone {
@@ -148,19 +154,19 @@ mod tests {
     #[test]
     fn the_pull_hint_is_spelled_for_the_target() {
         assert_eq!(
-            pull_hint("tool meta pull", &["prod"], "default", None),
+            pull_hint_for("tool meta pull", &["prod"], "default", None),
             "`tool meta pull --env prod`"
         );
         assert_eq!(
-            pull_hint("tool shop pull", &["dev", "prod"], "default", None),
+            pull_hint_for("tool shop pull", &["dev", "prod"], "default", None),
             "`tool shop pull --env <name>` for each env listed"
         );
         assert_eq!(
-            pull_hint("tool meta pull", &["default"], "default", None),
+            pull_hint_for("tool meta pull", &["default"], "default", None),
             "`tool meta pull`"
         );
         assert_eq!(
-            pull_hint(
+            pull_hint_for(
                 "tool shop pull",
                 &["default"],
                 "default",
