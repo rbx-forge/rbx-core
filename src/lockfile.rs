@@ -96,7 +96,11 @@ pub fn write(path: &Path, content: &str) -> Result<()> {
 ///   another drive (a repository on `D:\`, say) usually inherits a grant to
 ///   every authenticated user. If `icacls` fails, a warning names the file and
 ///   the write still succeeds: failing would lose a secret Roblox shows only
-///   once.
+///   once. It runs on the first write of a file in a process, and on any write
+///   that creates the file, not on every write: a file this process restricted
+///   and then wrote again keeps the access it was given. A file another
+///   program replaces under the same name while the process runs is the one
+///   case that is not restricted again.
 pub fn write_private(path: &Path, content: &str) -> Result<()> {
     write_with(path, content, overwrite_owner_only, std::thread::sleep)
 }
@@ -238,10 +242,45 @@ fn restrict_to_owner(file: &std::fs::File, _path: &Path, _created: bool) -> io::
 
 /// Leave `file` readable by its owner alone. `created` says whether this
 /// write just created it.
+///
+/// `icacls` runs once per file per process, not on every write: a tool that
+/// saves after each key, or a write that is retried, finds the file already
+/// restricted. A file the write just created is always restricted, since it
+/// is a new file with the access its directory gives.
 #[cfg(windows)]
-fn restrict_to_owner(_file: &std::fs::File, path: &Path, _created: bool) -> io::Result<()> {
-    restrict_to_current_user(path);
+fn restrict_to_owner(_file: &std::fs::File, path: &Path, created: bool) -> io::Result<()> {
+    static RESTRICTED: Restricted = Restricted::new();
+    RESTRICTED.restrict(path, created, restrict_to_current_user);
     Ok(())
+}
+
+/// The files this process has restricted to its user.
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+struct Restricted(std::sync::Mutex<std::collections::BTreeSet<PathBuf>>);
+
+#[cfg(any(windows, test))]
+impl Restricted {
+    const fn new() -> Self {
+        Self(std::sync::Mutex::new(std::collections::BTreeSet::new()))
+    }
+
+    /// Run `restrict` on `path`, unless this process already did and the file
+    /// is not one the write just created. `restrict` says whether it worked:
+    /// one that did not is tried again on the next write.
+    fn restrict(&self, path: &Path, created: bool, restrict: impl FnOnce(&Path) -> bool) {
+        let known = || {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        if !created && known().contains(path) {
+            return;
+        }
+        if restrict(path) {
+            known().insert(path.to_path_buf());
+        }
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -412,9 +451,10 @@ fn sync_parent(target: &Path) {
 #[cfg(not(unix))]
 fn sync_parent(_target: &Path) {}
 
-/// Drop inherited access and grant the current user alone, best effort.
+/// Drop inherited access and grant the current user alone, best effort. Says
+/// whether it worked, after a warning when it did not.
 #[cfg(windows)]
-fn restrict_to_current_user(path: &Path) {
+fn restrict_to_current_user(path: &Path) -> bool {
     let user = std::env::var("USERNAME").unwrap_or_default();
     let granted = !user.is_empty()
         && std::process::Command::new("icacls")
@@ -432,6 +472,7 @@ fn restrict_to_current_user(path: &Path) {
             path.display()
         );
     }
+    granted
 }
 
 fn write_with(
@@ -897,6 +938,58 @@ mod tests {
             "inherited entries remain:\n{listing}"
         );
         assert_eq!(std::fs::read_to_string(&path).expect("read"), "secret\n");
+    }
+
+    /// A file somebody else wrote, with the access its directory gives, is
+    /// restricted on its first private write even though it was not created
+    /// by it.
+    #[cfg(windows)]
+    #[test]
+    fn write_private_restricts_a_file_that_was_already_there_on_windows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+        std::fs::write(&path, "old\n").expect("seed");
+
+        write_private(&path, "secret\n").expect("write");
+        write_private(&path, "secret, again\n").expect("rewrite");
+
+        let out = std::process::Command::new("icacls")
+            .arg(&path)
+            .output()
+            .expect("icacls runs");
+        let listing = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !listing.contains("(I)"),
+            "inherited entries remain:\n{listing}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "secret, again\n"
+        );
+    }
+
+    /// One restriction per file per process, except for a file the write just
+    /// created, and except after one that did not work.
+    #[test]
+    fn a_file_is_restricted_once_unless_it_is_new_or_the_last_try_failed() {
+        let restricted = Restricted::new();
+        let runs = std::cell::RefCell::new(Vec::new());
+        let write = |name: &str, created: bool, works: bool| {
+            restricted.restrict(Path::new(name), created, |path| {
+                runs.borrow_mut().push(path.display().to_string());
+                works
+            })
+        };
+
+        write("a", true, true); // created: restricted
+        write("a", false, true); // written again: already restricted
+        write("a", false, true); // a retry: the same
+        write("b", false, true); // there before, never seen: restricted
+        write("a", true, true); // created again: a new file
+        write("c", true, false); // icacls failed
+        write("c", false, true); // so the next write tries again
+
+        assert_eq!(*runs.borrow(), ["a", "b", "a", "c", "c"]);
     }
 
     /// The names in `dir`, sorted: what a write left behind.

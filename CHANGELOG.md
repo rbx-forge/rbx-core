@@ -11,6 +11,7 @@
 
 - `lockfile::write_private` removes a file it created when any step fails, not only the write: a filesystem that refuses the permission change, or a failed read, left an empty file behind, and an empty lockfile is refused for having no version where an absent one is the ordinary start.
 - `lockfile::write_private` says so when the old content cannot be put back after a failed write: the error now reads that the file may be inconsistent, with the write's own error as its cause. That second failure was dropped, and the error read as if the file had been left as it was.
+- On Windows, `lockfile::write_private` runs `icacls` once per file per process, and again only for a file the write created, instead of on every write and every retry. A tool that saves once per key no longer starts a process per key. A file that was already there is still restricted on its first write.
 
 ## [0.1.3] - 2026-11-10
 
