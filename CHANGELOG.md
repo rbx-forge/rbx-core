@@ -13,6 +13,8 @@
 - `lockfile::write_private` says so when the old content cannot be put back after a failed write: the error now reads that the file may be inconsistent, with the write's own error as its cause. That second failure was dropped, and the error read as if the file had been left as it was.
 - On Windows, `lockfile::write_private` runs `icacls` once per file per process, and again only for a file the write created, instead of on every write and every retry. A tool that saves once per key no longer starts a process per key. A file that was already there is still restricted on its first write.
 - `lockfile::write` reads the age of a file beside the lockfile only when its name is that of a staged copy. It read the metadata of every file in the directory, on every write.
+- The doc of `lockfile::write` names where a rename cannot happen and the write fails: a directory the user cannot create files in, and a lockfile bind-mounted on its own into a container.
+- The doc of `lockfile::write_private` says that a process killed during the write, or before the file is cut to length, can leave new and old content mixed, as a power cut can.
 
 ## [0.1.3] - 2026-11-10
 
