@@ -357,6 +357,26 @@ const STALE_AFTER: Duration = Duration::from_secs(60);
 /// Best effort, and never this run's own: a leftover is clutter in a
 /// directory somebody commits from, not a reason to fail the write.
 fn remove_stale_siblings(target: &Path, own: &Path) {
+    remove_stale_siblings_with(target, own, |entry| {
+        entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+    });
+}
+
+/// [`remove_stale_siblings`], with the age of an entry injected so a test can
+/// see which entries were looked at.
+///
+/// The name is tested first, and the age read only for a name that matches: a
+/// directory somebody commits from holds far more files than staged copies,
+/// and each age is a call to the filesystem.
+fn remove_stale_siblings_with(
+    target: &Path,
+    own: &Path,
+    mut age: impl FnMut(&std::fs::DirEntry) -> Option<Duration>,
+) {
     let Some(name) = target.file_name() else {
         return;
     };
@@ -375,13 +395,10 @@ fn remove_stale_siblings(target: &Path, own: &Path) {
             .strip_prefix(&prefix)
             .and_then(|rest| rest.strip_suffix(".tmp"))
             .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
-        let stale = entry
-            .metadata()
-            .and_then(|meta| meta.modified())
-            .ok()
-            .and_then(|at| at.elapsed().ok())
-            .is_some_and(|age| age >= STALE_AFTER);
-        if staged_by_a_run && stale {
+        if !staged_by_a_run {
+            continue;
+        }
+        if age(&entry).is_some_and(|age| age >= STALE_AFTER) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -1094,6 +1111,29 @@ mod tests {
                 "fake.lock.toml",
             ]
         );
+    }
+
+    /// Only a name shaped like a staged copy has its age read: everything else
+    /// in the directory is passed over on its name alone.
+    #[test]
+    fn the_age_is_read_only_for_names_shaped_like_a_staged_copy() {
+        let (dir, path) = write("version = 1\n");
+        for name in [
+            ".fake.lock.toml.999999991.tmp",
+            ".fake.lock.toml.notes.tmp",
+            ".other.lock.toml.999999993.tmp",
+            "README.md",
+        ] {
+            std::fs::write(dir.path().join(name), "").expect("seed");
+        }
+
+        let mut aged = Vec::new();
+        remove_stale_siblings_with(&path, &sibling_of(&path), |entry| {
+            aged.push(entry.file_name().to_string_lossy().into_owned());
+            None
+        });
+
+        assert_eq!(aged, [".fake.lock.toml.999999991.tmp"]);
     }
 
     /// The reason a credential is not staged: the copy would be a second file
