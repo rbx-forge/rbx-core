@@ -75,7 +75,11 @@ pub fn write(path: &Path, content: &str) -> Result<()> {
 /// - It is never emptied first. The content is written over the old one, and
 ///   the file is cut to length afterwards.
 /// - If a step fails, the old content is put back. It fits where it was, so a
-///   full disk leaves the file as it was.
+///   full disk leaves the file as it was. If putting it back fails too, the
+///   error says the file may now be inconsistent.
+/// - A file this call created is removed if any step fails, the restriction
+///   below included. An empty lockfile is refused for having no version; an
+///   absent one is the ordinary start.
 ///
 /// What this does not give is the all-or-nothing of a rename: a machine that
 /// loses power during the write can leave the two contents mixed.
@@ -100,37 +104,92 @@ pub fn write_private(path: &Path, content: &str) -> Result<()> {
 /// Write `content` over `path` in place, with the file restricted to its
 /// owner before the first byte goes in.
 fn overwrite_owner_only(path: &Path, content: &str) -> io::Result<()> {
-    overwrite_with(path, content, put)
+    overwrite_with(path, content, restrict_to_owner, put)
 }
 
-/// [`overwrite_owner_only`], with the write injected so a test can fail it
-/// partway and see what is left.
+/// [`overwrite_owner_only`], with the restriction and the write injected so a
+/// test can fail either and see what is left.
 fn overwrite_with(
     path: &Path,
     content: &str,
+    restrict: impl FnOnce(&std::fs::File, &Path, bool) -> io::Result<()>,
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    let (mut file, created) = open_or_create(path)?;
+    let filled = fill(&mut file, path, created, content, restrict, write);
+    if filled.is_err() && created {
+        // There was no file, and an empty one is not the same thing: a
+        // lockfile that parses to nothing is refused, an absent one is not.
+        // So whichever step failed, the file this call created goes. Best
+        // effort: the error worth reporting is the one that stopped the write.
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+    filled
+}
+
+/// Restrict `file` to its owner, then write `content` over what it holds, and
+/// put that back if the write does not go through.
+fn fill(
+    file: &mut std::fs::File,
+    path: &Path,
+    created: bool,
+    content: &str,
+    restrict: impl FnOnce(&std::fs::File, &Path, bool) -> io::Result<()>,
     write: impl FnOnce(&mut std::fs::File, &[u8]) -> io::Result<()>,
 ) -> io::Result<()> {
     use std::io::Read;
 
-    let (mut file, created) = open_owner_only(path)?;
+    restrict(file, path, created)?;
     // What the file holds now, to put back if the write does not go through.
     let mut before = Vec::new();
     file.read_to_end(&mut before)?;
 
-    let Err(err) = write(&mut file, content.as_bytes()) else {
+    let Err(err) = write(file, content.as_bytes()) else {
         return Ok(());
     };
-    // Best effort from here: the error worth reporting is the one that
-    // stopped the write, not a failure to undo it.
     if created {
-        // There was no file, and an empty one is not the same thing: a
-        // lockfile that parses to nothing is refused, an absent one is not.
-        drop(file);
-        let _ = std::fs::remove_file(path);
-    } else {
-        let _ = put(&mut file, &before);
+        // Nothing to put back: the caller removes the file.
+        return Err(err);
     }
-    Err(err)
+    match put(file, &before) {
+        Ok(()) => Err(err),
+        Err(restore) => Err(io::Error::new(
+            err.kind(),
+            NotRestored {
+                write: err,
+                restore,
+            },
+        )),
+    }
+}
+
+/// A write that failed, and the undo that failed after it.
+///
+/// The file then holds neither the old content nor the new one for certain,
+/// which whoever reads the error has to be told. The write's error stays the
+/// cause, since it is the one that says what went wrong first.
+#[derive(Debug)]
+struct NotRestored {
+    write: io::Error,
+    restore: io::Error,
+}
+
+impl std::fmt::Display for NotRestored {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the write failed and the old content could not be put back ({}), so the file \
+             may now hold part of each and be inconsistent",
+            self.restore
+        )
+    }
+}
+
+impl std::error::Error for NotRestored {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.write)
+    }
 }
 
 /// Make `file` hold exactly `bytes`.
@@ -146,9 +205,12 @@ fn put(file: &mut std::fs::File, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
-/// Open `path` for an in-place write, creating it if it is not there, and
-/// leave it readable by its owner alone. Says whether it was created.
-fn open_owner_only(path: &Path) -> io::Result<(std::fs::File, bool)> {
+/// Open `path` for an in-place write, creating it if it is not there. Says
+/// whether it was created.
+///
+/// On Unix a file this creates has mode `0600` from the start, so there is no
+/// moment where it exists with the umask's default.
+fn open_or_create(path: &Path) -> io::Result<(std::fs::File, bool)> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true);
     #[cfg(unix)]
@@ -157,23 +219,34 @@ fn open_owner_only(path: &Path) -> io::Result<(std::fs::File, bool)> {
         options.mode(0o600);
     }
 
-    let (file, created) = match options.clone().create_new(true).open(path) {
-        Ok(file) => (file, true),
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => (options.open(path)?, false),
-        Err(err) => return Err(err),
-    };
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // `mode` is filtered by the umask at creation and ignored on a file
-        // that was already there: set it outright.
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    match options.clone().create_new(true).open(path) {
+        Ok(file) => Ok((file, true)),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Ok((options.open(path)?, false)),
+        Err(err) => Err(err),
     }
-    #[cfg(windows)]
-    restrict_to_current_user(path);
+}
 
-    Ok((file, created))
+/// Leave `file` readable by its owner alone. `created` says whether this
+/// write just created it.
+#[cfg(unix)]
+fn restrict_to_owner(file: &std::fs::File, _path: &Path, _created: bool) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    // `mode` is filtered by the umask at creation and ignored on a file that
+    // was already there: set it outright.
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+}
+
+/// Leave `file` readable by its owner alone. `created` says whether this
+/// write just created it.
+#[cfg(windows)]
+fn restrict_to_owner(_file: &std::fs::File, path: &Path, _created: bool) -> io::Result<()> {
+    restrict_to_current_user(path);
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn restrict_to_owner(_file: &std::fs::File, _path: &Path, _created: bool) -> io::Result<()> {
+    Ok(())
 }
 
 /// Replace `path` with `content` in one step.
@@ -939,7 +1012,7 @@ mod tests {
         write_private(&path, "old secret\n").expect("seed");
 
         let mut seen_during_the_write = Vec::new();
-        overwrite_with(&path, "new secret\n", |file, bytes| {
+        overwrite_with(&path, "new secret\n", restrict_to_owner, |file, bytes| {
             let done = put(file, bytes);
             seen_during_the_write = left_in(dir.path());
             done
@@ -966,6 +1039,7 @@ mod tests {
         let err = overwrite_with(
             &path,
             "a new secret that is longer than the old one\n",
+            restrict_to_owner,
             |file, bytes| {
                 file.seek(SeekFrom::Start(0))?;
                 file.write_all(&bytes[..bytes.len() / 2])?;
@@ -988,10 +1062,79 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("secret.lock.toml");
 
-        overwrite_with(&path, "secret\n", |_, _| Err(io::Error::other("refused")))
-            .expect_err("the write did not go through");
+        overwrite_with(&path, "secret\n", restrict_to_owner, |_, _| {
+            Err(io::Error::other("refused"))
+        })
+        .expect_err("the write did not go through");
 
         assert!(left_in(dir.path()).is_empty(), "{:?}", left_in(dir.path()));
+    }
+
+    /// The same holds for a step before the write: a filesystem that refuses
+    /// the restriction must not leave an empty file where there was none.
+    #[test]
+    fn a_private_write_refused_before_the_write_leaves_no_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+
+        let err = overwrite_with(
+            &path,
+            "secret\n",
+            |_, _, _| Err(io::Error::other("chmod refused")),
+            put,
+        )
+        .expect_err("the restriction did not go through");
+
+        assert_eq!(err.to_string(), "chmod refused");
+        assert!(left_in(dir.path()).is_empty(), "{:?}", left_in(dir.path()));
+    }
+
+    /// A file that was already there is kept when the restriction fails: it
+    /// was never touched.
+    #[test]
+    fn a_private_write_refused_before_the_write_keeps_a_file_that_was_there() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+        std::fs::write(&path, "the old secret\n").expect("seed");
+
+        overwrite_with(
+            &path,
+            "secret\n",
+            |_, _, _| Err(io::Error::other("chmod refused")),
+            put,
+        )
+        .expect_err("the restriction did not go through");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "the old secret\n"
+        );
+    }
+
+    /// When the undo fails too, the error says the file may now be neither,
+    /// and keeps what stopped the write as its cause.
+    #[test]
+    fn a_private_write_whose_undo_fails_says_the_file_may_be_inconsistent() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+        std::fs::write(&path, "the old secret\n").expect("seed");
+
+        let err = overwrite_with(&path, "a new secret\n", restrict_to_owner, |file, bytes| {
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(&bytes[..4])?;
+            // The handle the undo gets can no longer write.
+            *file = std::fs::File::open(&path)?;
+            Err(io::Error::other("no space left"))
+        })
+        .expect_err("the write did not go through");
+
+        let message = err.to_string();
+        assert!(message.contains("could not be put back"), "{message}");
+        assert!(message.contains("inconsistent"), "{message}");
+        let cause = std::error::Error::source(&err).map(ToString::to_string);
+        assert_eq!(cause.as_deref(), Some("no space left"));
     }
 
     /// The staged copy sits beside the file, so the rename never crosses a

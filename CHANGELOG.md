@@ -7,6 +7,11 @@
 - `api::needs_scope` puts the scope a refused call needed on top of a 403, since Roblox answers `Scope not authorized` without naming it. Any other error passes through as it is.
 - `newer`: the refusal a `sync` gives before it writes over a value changed on Roblox since the lockfile was written. `report` lists the values under their env and names both ways out (the pull, or `--overwrite-newer`), and `pull_hint` spells that pull for the run's target. The pull command is the caller's, binary included, so the hint names the tool that is running.
 
+### Fixed
+
+- `lockfile::write_private` removes a file it created when any step fails, not only the write: a filesystem that refuses the permission change, or a failed read, left an empty file behind, and an empty lockfile is refused for having no version where an absent one is the ordinary start.
+- `lockfile::write_private` says so when the old content cannot be put back after a failed write: the error now reads that the file may be inconsistent, with the write's own error as its cause. That second failure was dropped, and the error read as if the file had been left as it was.
+
 ## [0.1.3] - 2026-11-10
 
 ### Added
