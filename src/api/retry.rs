@@ -1,7 +1,8 @@
 //! Generic retry + JSON parsing wrappers around a `reqwest::Response`. Domain
 //! crates supply the request builder closure; this module handles 429/5xx
-//! retries, the server's own wait headers, transient network failures (timeouts,
-//! connection resets), and JSON deserialization with a useful error body.
+//! retries, the server's own wait headers, transport failures (timeouts,
+//! refused or dropped connections), and JSON deserialization with a useful
+//! error body.
 
 use std::time::Duration;
 
@@ -96,10 +97,14 @@ where
 
 /// Same as [`execute_with_retry`] but with a configurable policy. Retries on:
 /// - HTTP 429 (Too Many Requests) and 5xx server errors
-/// - Reqwest network errors classified as transient (timeout, connect)
+/// - Any reqwest transport failure: a timeout, a failure to connect, a
+///   connection that dropped before the answer came
 ///
-/// Does **not** retry on 4xx other than 429, or on opaque errors from the
-/// request closure that aren't reqwest network errors (e.g. config errors).
+/// For a request that is safe to send twice. Does **not** retry on 4xx other
+/// than 429, on a reqwest error that would fail the same way again (a request
+/// that could not be built, a refused redirect, a body that could not be
+/// decoded), or on opaque errors from the request closure that aren't reqwest
+/// errors (e.g. config errors).
 pub async fn execute_with_retry_policy<F, Fut>(
     make_request: F,
     policy: &RetryPolicy,
@@ -263,14 +268,26 @@ fn too_long_to_wait(status: StatusCode, wait: u64) -> String {
     format!("{asked}, which is too long to wait here. Run the same command again after that.")
 }
 
-/// Whether a request-closure error is something we should retry. Walks the
-/// anyhow source chain looking for a `reqwest::Error` that's a timeout or a
-/// connect failure (the two flavours of transient network flake we see most
-/// often against Roblox's edges).
+/// Whether a request-closure error is a transport failure, which a request
+/// that is safe to send twice can be sent again after. Walks the anyhow source
+/// chain for a `reqwest::Error`.
+///
+/// Every transport failure counts: a timeout, a failure to connect, and a
+/// connection that dropped once the request was on it, which is what a
+/// keep-alive connection the server closed before answering gives
+/// ("connection closed before message completed"). What does not count is the
+/// rest of what a `reqwest::Error` can be, since sending again would fail the
+/// same way: a request that could not be built, a redirect the policy
+/// refused, a body that could not be decoded, and a status turned into an
+/// error by `error_for_status`, which is an answer.
 fn is_transient_network_error(err: &anyhow::Error) -> bool {
     for cause in err.chain() {
         if let Some(req_err) = cause.downcast_ref::<reqwest::Error>() {
-            if req_err.is_timeout() || req_err.is_connect() {
+            let same_again = req_err.is_builder()
+                || req_err.is_redirect()
+                || req_err.is_decode()
+                || req_err.is_status();
+            if !same_again {
                 return true;
             }
         }
