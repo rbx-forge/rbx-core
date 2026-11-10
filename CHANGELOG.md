@@ -15,6 +15,7 @@
 - `lockfile::write` reads the age of a file beside the lockfile only when its name is that of a staged copy. It read the metadata of every file in the directory, on every write.
 - `api::execute_create_with_retry_policy` retries a failure to connect, which sent nothing, as it retries a 429. A timeout once connected, and any other transport failure after the request left, still come back on the first occurrence, as a write that may have landed.
 - A long wait before a retry says what Roblox answered: `Rate limited by Roblox` after a 429, `Roblox answered 503 Service Unavailable, retrying` after a 5xx. Every wait called itself a rate limit, and so did the refusal to wait when the server asks for too long.
+- Messages that every tool shows name none: a lockfile from a newer version says to update the tool that wrote it, not `rbx`, and the warning for an unknown `rbxplace.toml` key says it was ignored by this build of rbx-core, whose version it prints. It said `rbx` with rbx-core's version, which matches no `rbx` release. The crate and module docs no longer describe the crate as part of one binary.
 - The doc of `lockfile::write` names where a rename cannot happen and the write fails: a directory the user cannot create files in, and a lockfile bind-mounted on its own into a container.
 - The doc of `lockfile::write_private` says that a process killed during the write, or before the file is cut to length, can leave new and old content mixed, as a power cut can.
 

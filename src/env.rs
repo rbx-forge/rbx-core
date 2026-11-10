@@ -1,8 +1,8 @@
-//! Global CLI flags and env target resolution shared across every subcommand
-//! of the `rbx` binary.
+//! Global CLI flags and env target resolution, the same for every command of
+//! every tool that uses this crate.
 //!
-//! [`GlobalFlags`] is embedded into the top-level binary's parser via
-//! `#[command(flatten)]`. Subcommands receive a `&GlobalFlags` reference and
+//! [`GlobalFlags`] is embedded into a tool's top-level parser via
+//! `#[command(flatten)]`. Commands receive a `&GlobalFlags` reference and
 //! use it to resolve `--env <name>` (and `--env all`) into a list of
 //! [`EnvTarget`]s, then call the relevant Open Cloud APIs against each target.
 

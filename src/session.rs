@@ -33,7 +33,7 @@ use tokio::sync::Mutex;
 use crate::api::roblox_message;
 use crate::users::USERS_HOST;
 
-/// What `rbx` says when Roblox refuses the cookie.
+/// What a tool says when Roblox refuses the cookie.
 ///
 /// It names the state ("expired") and the two ways out, because "401" is not
 /// something a user can act on. Renewing is deliberately spelled in both
@@ -45,7 +45,7 @@ pub const EXPIRED_SESSION: &str =
      applied. Renew it (sign in to Roblox Studio again, or pass a fresh --cookie / set \
      RBX_COOKIE) then re-run.";
 
-/// What `rbx` says when the cookie is present but empty.
+/// What a tool says when the cookie is present but empty.
 ///
 /// `RBX_COOKIE=` is an explicit "no cookie" that resolution deliberately keeps
 /// as an answer rather than an absence, so it arrives here as a `Some("")`.

@@ -1,6 +1,5 @@
-//! Open Cloud HTTP client with retry and asset download. Domain crates
-//! (`rbx-shop`, `rbx-meta`, etc.) wrap this for their endpoint-specific
-//! calls.
+//! Open Cloud HTTP client with retry and asset download. The tools that use
+//! this crate wrap it for their endpoint-specific calls.
 
 mod asset;
 mod base;
