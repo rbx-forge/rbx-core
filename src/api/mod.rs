@@ -10,7 +10,7 @@ mod error;
 mod retry;
 
 pub use asset::{download_asset, download_asset_from};
-pub use base::{encode_query_value, explain_missing_scope, ApiBase, DEFAULT_API_BASE};
+pub use base::{encode_query_value, explain_missing_scope, needs_scope, ApiBase, DEFAULT_API_BASE};
 pub use configs::{
     validate_entries, ConfigMetadata, ConfigSnapshot, ConfigsClient, DraftResult, PublishResult,
     ReplacedDraft, Repository, RepositoryDraft, RevisionEntry, MAX_KEYS_PER_REPOSITORY,

@@ -34,6 +34,7 @@ pub mod fs_name;
 pub mod generated;
 pub mod image;
 pub mod lockfile;
+pub mod newer;
 pub mod output;
 pub mod owner;
 pub mod places;
