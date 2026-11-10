@@ -113,11 +113,13 @@ pub fn write(path: &Path, content: &str) -> Result<()> {
 ///   another drive (a repository on `D:\`, say) usually inherits a grant to
 ///   every authenticated user. If `icacls` fails, a warning names the file and
 ///   the write still succeeds: failing would lose a secret Roblox shows only
-///   once. It runs on the first write of a file in a process, and on any write
-///   that creates the file, not on every write: a file this process restricted
-///   and then wrote again keeps the access it was given. A file another
-///   program replaces under the same name while the process runs is the one
-///   case that is not restricted again.
+///   once. It runs on the first write of a file in a process, on any write
+///   that creates the file, and on the first one after [`write()`] replaced
+///   it, not on every write: a file this process restricted and then wrote
+///   again keeps the access it was given. The file is known by its canonical
+///   path. A file another program replaces under the same path while the
+///   process runs is not restricted again, and neither is a second name for
+///   it through a hard link.
 pub fn write_private(path: &Path, content: &str) -> Result<()> {
     write_with(path, content, overwrite_owner_only, std::thread::sleep)
 }
@@ -297,15 +299,44 @@ fn restrict_to_owner(file: &std::fs::File, _path: &Path, _created: bool) -> io::
 /// `icacls` runs once per file per process, not on every write: a tool that
 /// saves after each key, or a write that is retried, finds the file already
 /// restricted. A file the write just created is always restricted, since it
-/// is a new file with the access its directory gives.
+/// is a new file with the access its directory gives, and so is one this
+/// crate replaced through [`write()`] since.
 #[cfg(windows)]
 fn restrict_to_owner(_file: &std::fs::File, path: &Path, created: bool) -> io::Result<()> {
-    static RESTRICTED: Restricted = Restricted::new();
-    RESTRICTED.restrict(path, created, restrict_to_current_user);
+    RESTRICTED.restrict(&restricted_key(path), created, || {
+        restrict_to_current_user(path)
+    });
     Ok(())
 }
 
 /// The files this process has restricted to its user.
+#[cfg(windows)]
+static RESTRICTED: Restricted = Restricted::new();
+
+/// A file this crate just replaced is a new file, with the access its
+/// directory gives: the next private write of it restricts it again.
+#[cfg(windows)]
+fn forget_restriction(path: &Path) {
+    RESTRICTED.forget(&restricted_key(path));
+}
+
+#[cfg(not(windows))]
+fn forget_restriction(_path: &Path) {}
+
+/// What a restricted file is remembered by: its canonical path, so two
+/// spellings of one file (relative before and after a change of directory,
+/// through `..`) are one entry, and one relative name that comes to mean
+/// another file is not.
+///
+/// Still invisible to it: a file another program replaces under the same
+/// path while the process runs, and a second name for the same file through
+/// a hard link.
+#[cfg(any(windows, test))]
+fn restricted_key(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The files a process has restricted, by [`restricted_key`].
 #[cfg(any(windows, test))]
 #[derive(Debug)]
 struct Restricted(std::sync::Mutex<std::collections::BTreeSet<PathBuf>>);
@@ -316,21 +347,27 @@ impl Restricted {
         Self(std::sync::Mutex::new(std::collections::BTreeSet::new()))
     }
 
-    /// Run `restrict` on `path`, unless this process already did and the file
-    /// is not one the write just created. `restrict` says whether it worked:
-    /// one that did not is tried again on the next write.
-    fn restrict(&self, path: &Path, created: bool, restrict: impl FnOnce(&Path) -> bool) {
-        let known = || {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        };
-        if !created && known().contains(path) {
+    fn known(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<PathBuf>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Run `restrict` on the file `key` names, unless this process already
+    /// did and the file is not one the write just created. `restrict` says
+    /// whether it worked: one that did not is tried again on the next write.
+    fn restrict(&self, key: &Path, created: bool, restrict: impl FnOnce() -> bool) {
+        if !created && self.known().contains(key) {
             return;
         }
-        if restrict(path) {
-            known().insert(path.to_path_buf());
+        if restrict() {
+            self.known().insert(key.to_path_buf());
         }
+    }
+
+    /// The file `key` names is not the one that was restricted any more.
+    fn forget(&self, key: &Path) {
+        self.known().remove(key);
     }
 }
 
@@ -375,6 +412,7 @@ fn replace_with(
     match written {
         Ok(()) => {
             sync_parent(&target);
+            forget_restriction(&target);
             Ok(())
         }
         Err(err) => {
@@ -1057,8 +1095,8 @@ mod tests {
         let restricted = Restricted::new();
         let runs = std::cell::RefCell::new(Vec::new());
         let write = |name: &str, created: bool, works: bool| {
-            restricted.restrict(Path::new(name), created, |path| {
-                runs.borrow_mut().push(path.display().to_string());
+            restricted.restrict(Path::new(name), created, || {
+                runs.borrow_mut().push(name.to_string());
                 works
             })
         };
@@ -1072,6 +1110,60 @@ mod tests {
         write("c", false, true); // so the next write tries again
 
         assert_eq!(*runs.borrow(), ["a", "b", "a", "c", "c"]);
+    }
+
+    /// A file this crate replaced is forgotten, so its next private write
+    /// restricts it again.
+    #[test]
+    fn a_forgotten_file_is_restricted_again() {
+        let restricted = Restricted::new();
+        let mut runs = 0;
+        restricted.restrict(Path::new("a"), true, || {
+            runs += 1;
+            true
+        });
+        restricted.forget(Path::new("a"));
+        restricted.restrict(Path::new("a"), false, || {
+            runs += 1;
+            true
+        });
+        assert_eq!(runs, 2);
+    }
+
+    /// Two spellings of one file are one key.
+    #[test]
+    fn a_file_is_known_by_its_canonical_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("sub")).expect("mkdir");
+        let path = dir.path().join("secret.lock.toml");
+        std::fs::write(&path, "").expect("seed");
+
+        let roundabout = dir.path().join("sub").join("..").join("secret.lock.toml");
+        assert_eq!(restricted_key(&roundabout), restricted_key(&path));
+        assert_ne!(roundabout, path, "the test needs two spellings");
+    }
+
+    /// `write` replaces the file with one that has its directory's access. The
+    /// next private write must not take it for the file it restricted before.
+    #[cfg(windows)]
+    #[test]
+    fn a_private_write_after_a_replacement_restricts_the_new_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.lock.toml");
+
+        write_private(&path, "secret\n").expect("first private write");
+        super::write(&path, "replaced\n").expect("replaced by a rename");
+        write_private(&path, "secret, again\n").expect("second private write");
+
+        let out = std::process::Command::new("icacls")
+            .arg(&path)
+            .output()
+            .expect("icacls runs");
+        let listing = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !listing.contains("(I)"),
+            "inherited entries remain:\n{listing}"
+        );
     }
 
     /// The names in `dir`, sorted: what a write left behind.
