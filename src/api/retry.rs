@@ -291,7 +291,20 @@ fn wait_notice(status: StatusCode, secs: u64) -> String {
     if status == StatusCode::TOO_MANY_REQUESTS {
         format!("Rate limited by Roblox, waiting {secs}s...")
     } else {
-        format!("Roblox answered {status}, retrying in {secs}s...")
+        format!(
+            "Roblox answered {}, retrying in {secs}s...",
+            status_text(status)
+        )
+    }
+}
+
+/// `503 Service Unavailable`, or the bare code for a status with no standard
+/// name: `StatusCode`'s own `Display` prints `<unknown status code>` for the
+/// 520 and 522 a CDN in front of Roblox answers with.
+fn status_text(status: StatusCode) -> String {
+    match status.canonical_reason() {
+        Some(reason) => format!("{} {reason}", status.as_u16()),
+        None => status.as_u16().to_string(),
     }
 }
 
@@ -300,7 +313,10 @@ fn too_long_to_wait(status: StatusCode, wait: u64) -> String {
     let asked = if status == StatusCode::TOO_MANY_REQUESTS {
         format!("Roblox says this limit reopens in {wait}s")
     } else {
-        format!("Roblox answered {status} and asks to wait {wait}s before trying again")
+        format!(
+            "Roblox answered {} and asks to wait {wait}s before trying again",
+            status_text(status)
+        )
     };
     format!("{asked}, which is too long to wait here. Run the same command again after that.")
 }
@@ -406,6 +422,21 @@ mod tests {
         assert_eq!(
             after_a_503,
             "Roblox answered 503 Service Unavailable, retrying in 8s..."
+        );
+    }
+
+    /// A status with no standard name is printed as its code alone.
+    #[test]
+    fn a_status_with_no_name_is_printed_as_its_code() {
+        let cdn = StatusCode::from_u16(520).unwrap();
+        assert_eq!(
+            wait_notice(cdn, 8),
+            "Roblox answered 520, retrying in 8s..."
+        );
+        let refusal = too_long_to_wait(StatusCode::from_u16(522).unwrap(), 600);
+        assert!(
+            refusal.starts_with("Roblox answered 522 and asks"),
+            "{refusal}"
         );
     }
 
