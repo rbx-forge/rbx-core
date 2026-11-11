@@ -4,6 +4,7 @@
 
 ### Added
 
+- `GlobalFlags` implements `Default`: what a run with no flag and no environment variable parses to, `rbxplace.toml` for `--places` and every other field unset. A dependent that builds the struct by hand, in a test or for a command that does not parse it, can write `GlobalFlags { env: Some(..), ..Default::default() }`, and a field added to the struct then no longer breaks that literal.
 - `api::get_without_credentials` sends a GET with no credential and follows every redirect, to another origin included, for a download from the address an API answered with, such as a CDN. The response that ends the chain comes back whatever its status, and no error it returns names a URL, since a signed one is a working download link.
 
 ### Changed
