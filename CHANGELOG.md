@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
 ### Added
 
 - `GlobalFlags` implements `Default`: what a run with no flag and no environment variable parses to, `rbxplace.toml` for `--places` and every other field unset. A dependent that builds the struct by hand, in a test or for a command that does not parse it, can write `GlobalFlags { env: Some(..), ..Default::default() }`, and a field added to the struct then no longer breaks that literal.
