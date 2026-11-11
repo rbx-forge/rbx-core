@@ -27,15 +27,22 @@ const MAX_REDIRECTS: usize = 10;
 /// Follow while the request stays on its origin (scheme, host and port), stop
 /// at the first hop that leaves it.
 ///
+/// One move off the origin is followed: the same host going from http to
+/// https, both on their default port, which is how a site sends a plain
+/// request to its secure address. A hop that leaves https is stopped, even
+/// back to the first origin after such an upgrade.
+///
 /// Stopping hands the 3xx to the caller as the response, rather than failing:
 /// the retry layer reports it with its status, and a caller that wants the
 /// next hop can read its `Location`.
 pub(super) fn same_origin() -> Policy {
     Policy::custom(|attempt| {
-        let leaves_origin = attempt
-            .previous()
+        let previous = attempt.previous();
+        let next = attempt.url();
+        let leaves_origin = previous
             .first()
-            .is_none_or(|first| first.origin() != attempt.url().origin());
+            .is_none_or(|first| !stays_on_site(first, next))
+            || previous.last().is_some_and(|last| downgrades(last, next));
         if leaves_origin {
             attempt.stop()
         } else if attempt.previous().len() > MAX_REDIRECTS {
@@ -93,7 +100,9 @@ pub(super) struct Followed {
 /// this loop and count against nothing.
 ///
 /// The credential goes with a hop only while every hop so far has stayed on
-/// the origin it was given for, and once dropped it stays dropped. At most
+/// the origin it was given for, and once dropped it stays dropped. The same
+/// host moved from http to https on default ports counts as that origin, as
+/// it does for the shared clients' policy. At most
 /// [`MAX_REDIRECTS`] redirects are followed, so at most eleven requests are
 /// sent. A redirect from https to http is refused rather than followed, with
 /// or without a credential: it would put the rest of the chain, and the URL's
@@ -105,7 +114,7 @@ pub(super) async fn follow(
 ) -> Result<Followed> {
     // Not `{url}` in any message: a download location is a signed URL.
     let mut url = Url::parse(url).context("the address to download from is not a URL")?;
-    let origin = url.origin();
+    let first = url.clone();
     let mut credential = credential;
     let mut redirects = 0;
     loop {
@@ -114,7 +123,7 @@ pub(super) async fn follow(
             request = request.header(name, value);
         }
         let response = request.send().await.map_err(reqwest::Error::without_url)?;
-        let answered_elsewhere = url.origin() != origin;
+        let answered_elsewhere = !stays_on_site(&first, &url);
         let location = response
             .status()
             .is_redirection()
@@ -141,7 +150,7 @@ pub(super) async fn follow(
                 next.scheme()
             );
         }
-        if next.origin() != origin {
+        if !stays_on_site(&first, &next) {
             credential = None;
         }
         redirects += 1;
@@ -166,6 +175,19 @@ pub(crate) fn unfollowed(response: &Response) -> String {
         Some(host) => format!("redirected to {host}, which was not followed"),
         None => "redirected, and the redirect was not followed".to_string(),
     }
+}
+
+/// Whether `to` is where a credential given for `from` may still go: the same
+/// origin, or the same host moved from http to https with both on their
+/// default port.
+fn stays_on_site(from: &Url, to: &Url) -> bool {
+    let upgrade = from.scheme() == "http"
+        && to.scheme() == "https"
+        && from.host_str().is_some()
+        && from.host_str() == to.host_str()
+        && from.port().is_none()
+        && to.port().is_none();
+    from.origin() == to.origin() || upgrade
 }
 
 /// Whether a hop from `from` to `to` leaves https.
@@ -496,6 +518,22 @@ mod tests {
         .unwrap();
 
         assert!(followed.answered_elsewhere);
+    }
+
+    /// The mock servers speak http only, so the upgrade is asserted on the
+    /// test the policy and the loop apply to every hop.
+    #[test]
+    fn the_same_host_moving_to_https_stays_on_site_and_nothing_else_does() {
+        let url = |s: &str| Url::parse(s).unwrap();
+        let on_site = |from: &str, to: &str| stays_on_site(&url(from), &url(to));
+        assert!(on_site("http://api.test/a", "https://api.test/b"));
+        assert!(on_site("http://api.test:80/a", "https://api.test:443/b"));
+        assert!(on_site("https://api.test/a", "https://api.test/b"));
+        assert!(!on_site("https://api.test/a", "http://api.test/a"));
+        assert!(!on_site("http://api.test/a", "https://other.test/a"));
+        assert!(!on_site("http://api.test:8080/a", "https://api.test/a"));
+        assert!(!on_site("http://api.test/a", "https://api.test:8443/a"));
+        assert!(!on_site("http://api.test/a", "http://api.test:8080/a"));
     }
 
     /// The mock servers speak http only, so the downgrade is asserted on the
