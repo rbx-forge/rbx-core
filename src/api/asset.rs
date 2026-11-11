@@ -2,11 +2,10 @@
 //! so callers can hash them, save them to disk, or transform them as needed.
 
 use anyhow::{anyhow, bail, Context, Result};
-use reqwest::Client;
 use serde::Deserialize;
 
 use super::base::ApiBase;
-use super::redirect::get_without_credentials;
+use super::redirect::{follow, no_redirect_client};
 use super::retry::{execute_with_retry, status_text};
 
 #[derive(Debug, Deserialize)]
@@ -16,8 +15,8 @@ struct AssetDeliveryResponse {
 
 /// Fetch the bytes of a Roblox asset given its asset id. Goes through the
 /// asset delivery API to resolve the CDN URL, then downloads from it.
-pub async fn download_asset(client: &Client, api_key: &str, asset_id: u64) -> Result<Vec<u8>> {
-    download_asset_from(client, api_key, asset_id, &ApiBase::default()).await
+pub async fn download_asset(api_key: &str, asset_id: u64) -> Result<Vec<u8>> {
+    download_asset_from(api_key, asset_id, &ApiBase::default()).await
 }
 
 /// [`download_asset`] against a named host.
@@ -28,26 +27,34 @@ pub async fn download_asset(client: &Client, api_key: &str, asset_id: u64) -> Re
 /// than exercising it. A test therefore answers with its own address and gets
 /// both halves on one server.
 ///
-/// The key goes on the lookup only. The download from the CDN carries no
-/// credential, and follows its redirects to any host through
-/// [`get_without_credentials`]. `client` is expected to come from
-/// [`build_client`](super::build_client), whose redirects stay on the origin
-/// of the lookup: a client that follows every redirect would take the key to
-/// wherever the lookup redirected.
+/// Both requests go through a client of this function's own that follows no
+/// redirect, and their redirects are followed one hop at a time. The key goes
+/// on the lookup, and on a redirect of it only while that stays on the
+/// lookup's origin: once a hop leaves, the key is dropped for the rest of the
+/// chain. The download from the CDN carries no credential at all, and follows
+/// its redirects to any host. Where the key goes is therefore this function's
+/// to decide, not that of a client handed in.
 ///
 /// Every hop is checked: a lookup refused by Roblox, or a CDN that does not
 /// answer with a success, is an error rather than bytes. A CDN failure says
 /// its status and nothing else, since its body can echo the signature of the
-/// URL, and no error names the URL the lookup answered with.
-pub async fn download_asset_from(
-    client: &Client,
-    api_key: &str,
-    asset_id: u64,
-    base: &ApiBase,
-) -> Result<Vec<u8>> {
+/// URL, and so does a lookup answered from another origin after a redirect.
+/// No error names the URL the lookup answered with.
+pub async fn download_asset_from(api_key: &str, asset_id: u64, base: &ApiBase) -> Result<Vec<u8>> {
+    let client = no_redirect_client()?;
     let url = base.join(&format!("/asset-delivery-api/v1/assetId/{asset_id}"));
     let answer = execute_with_retry(|| async {
-        Ok(client.get(&url).header("x-api-key", api_key).send().await?)
+        let lookup = follow(&client, &url, Some(("x-api-key", api_key))).await?;
+        let status = lookup.response.status();
+        if lookup.answered_elsewhere && !status.is_success() {
+            // Not handed to the retry layer, which would quote the body.
+            bail!(
+                "the asset delivery API redirected asset {asset_id} to another host, which \
+                 answered {}",
+                status_text(status)
+            );
+        }
+        Ok(lookup.response)
     })
     .await?;
     // Read here rather than through `execute_json`, whose error for a body
@@ -57,9 +64,10 @@ pub async fn download_asset_from(
         anyhow!("the delivery API answered asset {asset_id} without a location to download: {e}")
     })?;
 
-    let cdn = get_without_credentials(client, &delivery.location)
+    let cdn = follow(&client, &delivery.location, None)
         .await
-        .with_context(|| format!("downloading asset {asset_id} from the CDN"))?;
+        .with_context(|| format!("downloading asset {asset_id} from the CDN"))?
+        .response;
     let status = cdn.status();
     if !status.is_success() {
         bail!(
@@ -80,7 +88,6 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use crate::api::build_client;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -102,7 +109,93 @@ mod tests {
     }
 
     async fn download(api: &MockServer) -> Result<Vec<u8>> {
-        download_asset_from(&build_client(), "secret", 7, &ApiBase::new(api.uri())).await
+        download_asset_from("secret", 7, &ApiBase::new(api.uri())).await
+    }
+
+    fn redirect_to(location: String) -> ResponseTemplate {
+        ResponseTemplate::new(307).insert_header("location", location)
+    }
+
+    /// A lookup that moved on its own origin is followed with the key.
+    #[tokio::test]
+    async fn a_lookup_redirected_on_its_origin_keeps_the_key() {
+        let cdn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"bytes".to_vec()))
+            .mount(&cdn)
+            .await;
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/asset-delivery-api/v1/assetId/7"))
+            .respond_with(redirect_to("/moved".into()))
+            .mount(&api)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/moved"))
+            .and(header("x-api-key", "secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "location": format!("{}/blob", cdn.uri())
+            })))
+            .mount(&api)
+            .await;
+
+        assert_eq!(download(&api).await.unwrap(), b"bytes");
+    }
+
+    /// A lookup redirected to another origin gets there without the key,
+    /// whatever client the caller uses elsewhere: the function follows the
+    /// hop itself.
+    #[tokio::test]
+    async fn a_lookup_redirected_to_another_origin_does_not_carry_the_key() {
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/lookup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "location": format!("{}/blob", elsewhere.uri())
+            })))
+            .mount(&elsewhere)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/blob"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"bytes".to_vec()))
+            .mount(&elsewhere)
+            .await;
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(redirect_to(format!("{}/lookup", elsewhere.uri())))
+            .mount(&api)
+            .await;
+
+        assert_eq!(download(&api).await.unwrap(), b"bytes");
+
+        let reached = elsewhere.received_requests().await.unwrap();
+        assert_eq!(reached.len(), 2);
+        assert!(
+            reached.iter().all(|r| r.headers.get("x-api-key").is_none()),
+            "the key must not follow the lookup to another origin"
+        );
+    }
+
+    /// A refusal from where the lookup was redirected is that host's, and
+    /// its body is not shown.
+    #[tokio::test]
+    async fn a_refusal_after_the_lookup_left_its_origin_shows_no_body() {
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("body-eeeeFFFF"))
+            .mount(&elsewhere)
+            .await;
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(redirect_to(format!("{}/x?{SIGNATURE}", elsewhere.uri())))
+            .mount(&api)
+            .await;
+
+        let shown = format!("{:#}", download(&api).await.unwrap_err());
+
+        assert!(shown.contains("403 Forbidden"), "got {shown}");
+        assert!(!shown.contains("eeeeFFFF"), "got {shown}");
+        assert!(!shown.contains("aaaaBBBBccccDDDD"), "got {shown}");
     }
 
     /// The two-step this function exists for: the delivery API answers with a
@@ -126,14 +219,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let bytes = download_asset_from(
-            &build_client(),
-            "test-key",
-            123,
-            &ApiBase::new(server.uri()),
-        )
-        .await
-        .unwrap();
+        let bytes = download_asset_from("test-key", 123, &ApiBase::new(server.uri()))
+            .await
+            .unwrap();
 
         assert_eq!(bytes, b"PNG-ish");
     }
@@ -162,8 +250,7 @@ mod tests {
     }
 
     /// A CDN that redirects to another host is followed there, without the
-    /// key. The shared client stops at such a redirect, so this is the hop
-    /// the download follows itself.
+    /// key.
     #[tokio::test]
     async fn a_cdn_redirect_to_another_host_is_followed_without_the_key() {
         let mirror = MockServer::start().await;
@@ -242,10 +329,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        assert!(
-            download_asset_from(&build_client(), "k", 9, &ApiBase::new(server.uri()))
-                .await
-                .is_err()
-        );
+        assert!(download_asset_from("k", 9, &ApiBase::new(server.uri()))
+            .await
+            .is_err());
     }
 }
