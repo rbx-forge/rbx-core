@@ -253,7 +253,7 @@ pub struct GlobalFlags {
     /// Path to `rbxplace.toml`.
     ///
     /// Only used when `--env` is passed.
-    #[arg(long, global = true, default_value = "rbxplace.toml")]
+    #[arg(long, global = true, default_value = places::PLACES_FILE)]
     pub places: PathBuf,
 
     /// Universe id, instead of naming an env.
@@ -311,6 +311,29 @@ impl fmt::Debug for GlobalFlags {
             .field("universe_id", &self.universe_id)
             .field("place_id", &self.place_id)
             .finish()
+    }
+}
+
+/// What a run with no flag and no environment variable parses to: no
+/// credential, no target, both cookie flags off, and `rbxplace.toml` for
+/// `--places`.
+///
+/// For a struct literal that sets the fields it cares about and takes the
+/// rest with `..GlobalFlags::default()`, so a field added here does not break
+/// it.
+impl Default for GlobalFlags {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            cookie: None,
+            no_auto_cookie: false,
+            auto_cookie: false,
+            env: None,
+            place: None,
+            places: PathBuf::from(places::PLACES_FILE),
+            universe_id: None,
+            place_id: Vec::new(),
+        }
     }
 }
 
@@ -581,17 +604,36 @@ mod tests {
     /// Default flags: nothing passed, so a found Studio cookie is a candidate
     /// and not yet a credential.
     fn flags() -> GlobalFlags {
-        GlobalFlags {
-            api_key: None,
-            cookie: None,
-            no_auto_cookie: false,
-            auto_cookie: false,
-            env: None,
-            place: None,
-            places: PathBuf::from("rbxplace.toml"),
-            universe_id: None,
-            place_id: Vec::new(),
+        GlobalFlags::default()
+    }
+
+    /// The default is what clap parses when nothing is passed, so a literal
+    /// built on it means the same as a run with no flags.
+    #[test]
+    fn the_default_is_what_an_empty_command_line_parses_to() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            global: GlobalFlags,
         }
+
+        let parsed = Cli::try_parse_from(["test"]).unwrap().global;
+        let default = GlobalFlags::default();
+
+        // The credentials are not compared: clap reads them from
+        // `RBX_API_KEY` and `RBX_COOKIE`, which a developer may have set.
+        assert!(default.api_key.is_none());
+        assert!(default.cookie.is_none());
+        assert_eq!(default.no_auto_cookie, parsed.no_auto_cookie);
+        assert_eq!(default.auto_cookie, parsed.auto_cookie);
+        assert_eq!(default.env, parsed.env);
+        assert_eq!(default.place, parsed.place);
+        assert_eq!(default.places, parsed.places);
+        assert_eq!(default.universe_id, parsed.universe_id);
+        assert_eq!(default.place_id, parsed.place_id);
+        assert_eq!(default.places, PathBuf::from("rbxplace.toml"));
     }
 
     /// `--auto-cookie`: the standing yes. A test binary's streams are not
