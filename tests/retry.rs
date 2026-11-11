@@ -486,7 +486,8 @@ async fn a_write_that_never_connected_did_not_land() {
 }
 
 /// An answer that the caller's side turned into an error is still an answer,
-/// except a 5xx, which is no answer whichever side reports it.
+/// except a 5xx, which is no answer whichever side reports it, and a redirect
+/// the policy refused, which may follow a write that was applied.
 #[tokio::test]
 async fn an_answer_turned_into_an_error_did_not_land() {
     let server = MockServer::start().await;
@@ -522,7 +523,10 @@ async fn an_answer_turned_into_an_error_did_not_land() {
 
     let redirected = post("/loop").await.unwrap_err();
     assert!(redirected.is_redirect(), "{redirected:#}");
-    assert!(!may_have_landed(&redirected.into()), "a refused redirect");
+    assert!(
+        may_have_landed(&redirected.into()),
+        "a write redirected too many times"
+    );
 
     let garbled = post("/garbled")
         .await

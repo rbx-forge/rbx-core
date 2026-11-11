@@ -146,14 +146,15 @@ where
 /// request has left: either can hide a write that went through. A failure to
 /// connect is the one transport failure that cannot, because nothing was sent.
 ///
-/// A 3xx is not a refusal either. The shared clients stop at a redirect to
-/// another origin and the retry layer reports it as an [`ApiError`] with that
-/// status, and a server that redirects a write, a `303 See Other` after a
-/// create, has often done it already.
+/// A redirect is not a refusal either, and a server that redirects a write, a
+/// `303 See Other` after a create, has often done it already. So a 3xx counts
+/// as a write that may have landed, whether the shared clients stopped at it
+/// (the retry layer reports it as an [`ApiError`] with that status) or a
+/// client's policy refused it as an error, too many redirects for one.
 ///
 /// An answer turned into an error on the caller's side is still an answer: a
-/// status from `error_for_status` (a 5xx excepted, as above), a redirect the
-/// client's policy refused, a body that could not be decoded.
+/// status from `error_for_status` (a 5xx excepted, as above), a body that
+/// could not be decoded.
 pub fn may_have_landed(error: &anyhow::Error) -> bool {
     if api_status(error).is_some_and(|status| status.is_server_error() || status.is_redirection()) {
         return true;
@@ -191,7 +192,7 @@ fn reached(error: &anyhow::Error) -> Option<Reached> {
         } else {
             Reached::Answered
         }
-    } else if sent.is_redirect() || sent.is_decode() {
+    } else if sent.is_decode() {
         Reached::Answered
     } else {
         Reached::Unknown
