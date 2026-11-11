@@ -296,7 +296,7 @@ mod tests {
         let url = format!("{}/products", api.uri());
 
         let error = crate::api::execute_create_with_retry_policy(
-            || async { Ok(client.post(&url).header("x-api-key", "k").send().await?) },
+            || client.post(&url).header("x-api-key", "k"),
             &crate::api::RetryPolicy::default(),
         )
         .await

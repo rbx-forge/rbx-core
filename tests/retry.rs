@@ -129,7 +129,7 @@ async fn a_429_is_retried_after_the_reset() {
     let client = Client::new();
     let url = format!("{}/r", server.uri());
     let started = std::time::Instant::now();
-    let resp = execute_create_with_retry_policy(|| get(&client, &url), &fast_policy())
+    let resp = execute_create_with_retry_policy(|| client.get(&url), &fast_policy())
         .await
         .unwrap();
 
@@ -269,12 +269,9 @@ async fn a_create_is_resent_after_a_429() {
 
     let client = Client::new();
     let url = format!("{}/c", server.uri());
-    let resp = execute_create_with_retry_policy(
-        || async { Ok(client.post(&url).send().await?) },
-        &fast_policy(),
-    )
-    .await
-    .unwrap();
+    let resp = execute_create_with_retry_policy(|| client.post(&url), &fast_policy())
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -292,13 +289,10 @@ async fn a_create_is_not_resent_after_a_5xx() {
 
     let client = Client::new();
     let url = format!("{}/c", server.uri());
-    let err = execute_create_with_retry_policy(
-        || async { Ok(client.post(&url).send().await?) },
-        &fast_policy(),
-    )
-    .await
-    .unwrap_err()
-    .to_string();
+    let err = execute_create_with_retry_policy(|| client.post(&url), &fast_policy())
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("503"), "{err}");
 }
 
@@ -320,7 +314,7 @@ async fn a_create_is_not_resent_once_the_request_has_left() {
     let err = execute_create_with_retry_policy(
         || {
             calls.fetch_add(1, Ordering::SeqCst);
-            async { Ok(client.post(&url).send().await?) }
+            client.post(&url)
         },
         &fast_policy_n(2),
     )
@@ -369,7 +363,7 @@ async fn a_create_that_could_not_connect_is_sent_again() {
             } else {
                 (&client, url.as_str())
             };
-            async move { Ok(client.post(url).send().await?) }
+            client.post(url)
         },
         &fast_policy_n(2),
     )
@@ -390,7 +384,7 @@ async fn a_create_that_never_connects_spends_the_budget_and_did_not_land() {
     let err = execute_create_with_retry_policy(
         || {
             calls.fetch_add(1, Ordering::SeqCst);
-            async { Ok(client.post("http://127.0.0.1:1/never").send().await?) }
+            client.post("http://127.0.0.1:1/never")
         },
         &fast_policy_n(2),
     )
@@ -403,12 +397,9 @@ async fn a_create_that_never_connects_spends_the_budget_and_did_not_land() {
 
 /// One write through the create-only path, and the error it came back with.
 async fn failed_write(client: &Client, url: &str) -> anyhow::Error {
-    execute_create_with_retry_policy(
-        || async { Ok(client.post(url).send().await?) },
-        &fast_policy_n(0),
-    )
-    .await
-    .unwrap_err()
+    execute_create_with_retry_policy(|| client.post(url), &fast_policy_n(0))
+        .await
+        .unwrap_err()
 }
 
 const ADVICE: &str = "read it back before running this again";
@@ -467,6 +458,39 @@ async fn a_write_roblox_refused_did_not_land() {
             "{status}"
         );
     }
+}
+
+/// A `POST` answered with a 302 on its own origin is followed as a `GET`, and
+/// the 404 of that `GET` says nothing about the write, which may have been
+/// applied before the redirect. The doubt survives a caller's own context.
+#[tokio::test]
+async fn a_write_that_failed_after_a_followed_redirect_may_have_landed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/w"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/created"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/created"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let err = failed_write(
+        &rbx_core::api::build_client(),
+        &format!("{}/w", server.uri()),
+    )
+    .await
+    .context("creating the product");
+
+    assert!(
+        is_api_status(&err, reqwest::StatusCode::NOT_FOUND),
+        "{err:#}"
+    );
+    assert!(may_have_landed(&err), "{err:#}");
+    assert!(format!("{:#}", unconfirmed(err, ADVICE)).contains(ADVICE));
 }
 
 /// Nothing was sent, so nothing can have landed, whether the connection was
