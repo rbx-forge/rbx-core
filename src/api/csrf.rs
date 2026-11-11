@@ -108,7 +108,13 @@ where
             }
         }
 
-        let body = response.text().await.unwrap_or_default();
+        // A 3xx is a redirect the client did not follow: its body can name
+        // the target, so it is not kept.
+        let body = if status.is_redirection() {
+            super::unfollowed(&response)
+        } else {
+            response.text().await.unwrap_or_default()
+        };
         return Err(CsrfError::Refused(Refusal {
             status,
             body,

@@ -251,7 +251,13 @@ where
                 }
 
                 if !resend.after_status(status) || attempt >= policy.max_retries {
-                    let body = response.text().await.unwrap_or_default();
+                    // A 3xx here is a redirect the client did not follow, and
+                    // its body can name the target, signature and all.
+                    let body = if status.is_redirection() {
+                        super::unfollowed(&response)
+                    } else {
+                        response.text().await.unwrap_or_default()
+                    };
                     // Typed rather than formatted: callers branch on the
                     // status, and a body is free to contain digits that look
                     // like one. See `super::error`.

@@ -52,6 +52,10 @@ impl ApiError {
     }
 
     /// The raw response body.
+    ///
+    /// Except for a 3xx built by the retry layer: a redirect the client did
+    /// not follow keeps no body, since it can name the target with its
+    /// signature, and this is a sentence naming the target's host instead.
     pub fn body(&self) -> &str {
         &self.body
     }

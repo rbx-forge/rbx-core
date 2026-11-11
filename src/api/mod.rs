@@ -19,6 +19,7 @@ pub use configs::{
 pub use csrf::{send_with_csrf, CsrfError, CsrfToken, Refusal};
 pub use error::{api_status, is_api_status, roblox_error, roblox_message, ApiError};
 pub use redirect::get_without_credentials;
+pub(crate) use redirect::unfollowed;
 pub use retry::{
     execute_create_with_retry_policy, execute_json, execute_with_retry, execute_with_retry_policy,
     may_have_landed, unconfirmed, RetryPolicy,
