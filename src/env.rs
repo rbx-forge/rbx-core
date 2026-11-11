@@ -298,18 +298,33 @@ pub struct GlobalFlags {
 
 /// Hand-written rather than derived, because the derive prints the API key and
 /// the cookie in full.
+///
+/// The struct is taken apart field by field, with no `..`, so a field added to
+/// it does not compile here until somebody decides whether it is shown or
+/// redacted.
 impl fmt::Debug for GlobalFlags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            api_key,
+            cookie,
+            no_auto_cookie,
+            auto_cookie,
+            env,
+            place,
+            places,
+            universe_id,
+            place_id,
+        } = self;
         f.debug_struct("GlobalFlags")
-            .field("api_key", &Redacted(self.api_key.is_some()))
-            .field("cookie", &Redacted(self.cookie.is_some()))
-            .field("no_auto_cookie", &self.no_auto_cookie)
-            .field("auto_cookie", &self.auto_cookie)
-            .field("env", &self.env)
-            .field("place", &self.place)
-            .field("places", &self.places)
-            .field("universe_id", &self.universe_id)
-            .field("place_id", &self.place_id)
+            .field("api_key", &Redacted(api_key.is_some()))
+            .field("cookie", &Redacted(cookie.is_some()))
+            .field("no_auto_cookie", no_auto_cookie)
+            .field("auto_cookie", auto_cookie)
+            .field("env", env)
+            .field("place", place)
+            .field("places", places)
+            .field("universe_id", universe_id)
+            .field("place_id", place_id)
             .finish()
     }
 }

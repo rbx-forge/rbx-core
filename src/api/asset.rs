@@ -1,6 +1,8 @@
 //! Asset download via the Open Cloud asset delivery API. Returns raw bytes
 //! so callers can hash them, save them to disk, or transform them as needed.
 
+use std::fmt;
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
@@ -8,9 +10,20 @@ use super::base::ApiBase;
 use super::redirect::{follow, no_redirect_client};
 use super::retry::{execute_with_retry, status_text};
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct AssetDeliveryResponse {
     location: String,
+}
+
+/// Hand-written rather than derived: `location` is a signed URL, a working
+/// download link in whatever log a `{:?}` reaches.
+impl fmt::Debug for AssetDeliveryResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { location: _ } = self;
+        f.debug_struct("AssetDeliveryResponse")
+            .field("location", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Fetch the bytes of a Roblox asset given its asset id. Goes through the
@@ -318,6 +331,16 @@ mod tests {
         let shown = format!("{error:#}");
         assert!(shown.contains("without a location"), "got {shown}");
         assert!(!shown.contains("aaaaBBBBccccDDDD"), "got {shown}");
+    }
+
+    #[test]
+    fn debug_does_not_show_the_signed_location() {
+        let answer = AssetDeliveryResponse {
+            location: format!("https://cdn.test/blob?{SIGNATURE}"),
+        };
+        let shown = format!("{answer:?} {answer:#?}");
+        assert!(!shown.contains("aaaaBBBBccccDDDD"), "got {shown}");
+        assert!(!shown.contains("cdn.test"), "got {shown}");
     }
 
     #[tokio::test]
