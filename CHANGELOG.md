@@ -13,6 +13,7 @@
 ### Fixed
 
 - The `Debug` of `GlobalFlags` shows the API key and the cookie as `Some(<redacted>)` or `None`, so a `{:?}` of the flags in an error or a log no longer prints either credential. The `Debug` of `api::CsrfToken` no longer prints the token it holds.
+- `api::download_asset` and `api::download_asset_from` check the status of every hop. A CDN that does not answer with a success is an error that gives its status alone, instead of its body returned as the asset: an error page saved as an image and hashed into a lockfile. The download from the CDN carries no key and follows its redirects to another host through `api::get_without_credentials`. No error prints a CDN body or the signed URL the delivery API answered with, including when that answer has no `location` to read.
 
 ## [0.1.4] - 2026-11-10
 

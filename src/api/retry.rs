@@ -301,7 +301,7 @@ fn wait_notice(status: StatusCode, secs: u64) -> String {
 /// `503 Service Unavailable`, or the bare code for a status with no standard
 /// name: `StatusCode`'s own `Display` prints `<unknown status code>` for the
 /// 520 and 522 a CDN in front of Roblox answers with.
-fn status_text(status: StatusCode) -> String {
+pub(super) fn status_text(status: StatusCode) -> String {
     match status.canonical_reason() {
         Some(reason) => format!("{} {reason}", status.as_u16()),
         None => status.as_u16().to_string(),
