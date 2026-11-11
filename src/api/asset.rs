@@ -1,8 +1,8 @@
 //! Asset download via the Open Cloud asset delivery API. Returns raw bytes
 //! so callers can hash them, save them to disk, or transform them as needed.
 
-use std::cell::Cell;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -57,10 +57,11 @@ pub async fn download_asset(api_key: &str, asset_id: u64) -> Result<Vec<u8>> {
 pub async fn download_asset_from(api_key: &str, asset_id: u64, base: &ApiBase) -> Result<Vec<u8>> {
     let client = no_redirect_client()?;
     let url = base.join(&format!("/asset-delivery-api/v1/assetId/{asset_id}"));
-    let answered_elsewhere = Cell::new(false);
+    // Atomic rather than a `Cell` so the caller's future stays `Send`.
+    let answered_elsewhere = AtomicBool::new(false);
     let answer = execute_with_retry(|| async {
         let lookup = follow(&client, &url, Some(("x-api-key", api_key))).await?;
-        answered_elsewhere.set(lookup.answered_elsewhere);
+        answered_elsewhere.store(lookup.answered_elsewhere, Ordering::Relaxed);
         let status = lookup.response.status();
         if lookup.answered_elsewhere && !status.is_success() {
             // Not handed to the retry layer, which would quote the body.
@@ -77,7 +78,7 @@ pub async fn download_asset_from(api_key: &str, asset_id: u64, base: &ApiBase) -
     // it cannot parse quotes the body, and this body holds a signed URL.
     let body = answer.bytes().await.map_err(reqwest::Error::without_url)?;
     let delivery: AssetDeliveryResponse = serde_json::from_slice(&body).map_err(|e| {
-        if answered_elsewhere.get() {
+        if answered_elsewhere.load(Ordering::Relaxed) {
             // serde's text can quote values out of the body, and this body
             // came from a host the lookup was redirected to.
             anyhow!(

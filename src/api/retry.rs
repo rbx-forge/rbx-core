@@ -3,11 +3,13 @@
 //! retries, the server's own wait headers, transient network failures (timeouts,
 //! connection resets), and JSON deserialization with a useful error body.
 
+use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use reqwest::header::HeaderMap;
-use reqwest::{Response, StatusCode};
+use reqwest::{RequestBuilder, Response, StatusCode};
 
 use super::{api_status, ApiError};
 
@@ -128,15 +130,60 @@ where
 /// before the answer was lost, and resending it makes a second developer
 /// product or pass that cannot be deleted. Those come back to the caller on
 /// the first occurrence. The two sides are the ones [`may_have_landed`] draws.
-pub async fn execute_create_with_retry_policy<F, Fut>(
-    make_request: F,
+///
+/// `make_request` builds the request rather than sending it, as
+/// [`send_with_csrf`](super::send_with_csrf) takes it, so this function knows
+/// the URL it was sent to. When the answer comes from another URL, the client
+/// followed a redirect: a `POST` answered with a 302 on its own origin
+/// arrives as a `GET` of wherever that pointed, and a 4xx from there says
+/// nothing about the write. A failure after such a hop is then a write that
+/// may have landed.
+pub async fn execute_create_with_retry_policy<F>(
+    mut make_request: F,
     policy: &RetryPolicy,
 ) -> Result<Response>
 where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<Response>>,
+    F: FnMut() -> RequestBuilder,
 {
-    execute(make_request, policy, Resend::OnlyWhatCannotHaveLanded).await
+    // Atomic rather than a `Cell` so the caller's future stays `Send`.
+    let redirected = AtomicBool::new(false);
+    let result = execute(
+        || {
+            let (client, request) = make_request().build_split();
+            let redirected = &redirected;
+            async move {
+                let request = request?;
+                let sent_to = request.url().clone();
+                let response = client.execute(request).await?;
+                redirected.store(response.url() != &sent_to, Ordering::Relaxed);
+                Ok(response)
+            }
+        },
+        policy,
+        Resend::OnlyWhatCannotHaveLanded,
+    )
+    .await;
+    result.map_err(|error| {
+        if redirected.load(Ordering::Relaxed) {
+            error.context(FollowedRedirect)
+        } else {
+            error
+        }
+    })
+}
+
+/// Put on a failed write whose answer came after a redirect the client
+/// followed, which [`may_have_landed`] reads.
+#[derive(Debug)]
+struct FollowedRedirect;
+
+impl fmt::Display for FollowedRedirect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "the write was answered with a redirect that was followed, and what failed is the \
+             request at the end of it, so the write may have been applied",
+        )
+    }
 }
 
 /// Whether a write that failed may still have been applied.
@@ -152,10 +199,17 @@ where
 /// (the retry layer reports it as an [`ApiError`] with that status) or a
 /// client's policy refused it as an error, too many redirects for one.
 ///
+/// A failure from [`execute_create_with_retry_policy`] after a redirect the
+/// client followed counts too, whatever its status: the request that failed
+/// is not the write.
+///
 /// An answer turned into an error on the caller's side is still an answer: a
 /// status from `error_for_status` (a 5xx excepted, as above), a body that
 /// could not be decoded.
 pub fn may_have_landed(error: &anyhow::Error) -> bool {
+    if error.downcast_ref::<FollowedRedirect>().is_some() {
+        return true;
+    }
     if api_status(error).is_some_and(|status| status.is_server_error() || status.is_redirection()) {
         return true;
     }

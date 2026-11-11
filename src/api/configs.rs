@@ -311,15 +311,12 @@ impl ConfigsClient {
         // Sent once: after a 5xx or a timeout the write may have landed, and a
         // second one would be refused on the hash it moved, or apply twice.
         let response = execute_create_with_retry_policy(
-            || async {
-                Ok(self
-                    .client
+            || {
+                self.client
                     .put(&url)
                     .header("x-api-key", &api_key)
                     .header("Content-Type", "application/json")
                     .body(body.clone())
-                    .send()
-                    .await?)
             },
             &RetryPolicy::default(),
         )
@@ -346,15 +343,12 @@ impl ConfigsClient {
         // Sent once: after a 5xx or a timeout the publish may have landed, and
         // a second one would publish again.
         let response = execute_create_with_retry_policy(
-            || async {
-                Ok(self
-                    .client
+            || {
+                self.client
                     .post(&url)
                     .header("x-api-key", &api_key)
                     .header("Content-Type", "application/json")
                     .body(body.clone())
-                    .send()
-                    .await?)
             },
             &RetryPolicy::default(),
         )
@@ -466,14 +460,7 @@ impl ConfigsClient {
         // Sent once: after a 5xx or a timeout the restore may have been staged,
         // and a second one would stage it over whatever the draft holds by then.
         let response = execute_create_with_retry_policy(
-            || async {
-                Ok(self
-                    .client
-                    .post(&url)
-                    .header("x-api-key", &api_key)
-                    .send()
-                    .await?)
-            },
+            || self.client.post(&url).header("x-api-key", &api_key),
             &RetryPolicy::default(),
         )
         .await
