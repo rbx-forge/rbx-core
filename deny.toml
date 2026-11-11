@@ -1,0 +1,68 @@
+# cargo-deny: what we accept from the dependency tree.
+#
+# This crate is a library, but every tool built on it ships its dependency tree
+# inside a statically linked binary. A license or an advisory accepted here is
+# accepted on behalf of all of them, so the bar is the one a distributed binary
+# needs: advisories, licenses, sources, and duplicate versions as a warning.
+#
+# Run it locally with the same command CI runs: `cargo deny check`.
+
+[graph]
+# The targets the tools built on this crate ship, so cargo-deny does not ask
+# crates that no build ever compiles (UEFI, WASI, ...) to justify themselves.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]
+# `schema` is optional but real: the tools that generate a JSON schema turn it
+# on, so its dependencies are checked too.
+all-features = true
+
+[advisories]
+version = 2
+# No blanket ignores. An advisory that does not apply is listed by id with its
+# reason and a date to look at it again, and leaves the list as soon as the
+# dependency can move.
+ignore = []
+
+[licenses]
+version = 2
+# Enumerated rather than pattern matched: a new license in the tree should fail
+# CI and be a decision. Each one here allows redistribution in a binary under
+# MPL-2.0. Deliberately absent: GPL and LGPL in any form, whose terms would
+# attach to a statically linked artifact.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+# The threshold cargo-deny itself suggests for a license file matched by text
+# rather than by SPDX id.
+confidence-threshold = 0.8
+
+[bans]
+# Warn, not deny: a duplicate version is usually a dependency's transitive lag,
+# and failing CI on something only a fork could fix trains everyone to ignore
+# the job.
+multiple-versions = "warn"
+# No `*` version requirement on anything.
+wildcards = "deny"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
