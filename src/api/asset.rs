@@ -1,6 +1,7 @@
 //! Asset download via the Open Cloud asset delivery API. Returns raw bytes
 //! so callers can hash them, save them to disk, or transform them as needed.
 
+use std::cell::Cell;
 use std::fmt;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -56,8 +57,10 @@ pub async fn download_asset(api_key: &str, asset_id: u64) -> Result<Vec<u8>> {
 pub async fn download_asset_from(api_key: &str, asset_id: u64, base: &ApiBase) -> Result<Vec<u8>> {
     let client = no_redirect_client()?;
     let url = base.join(&format!("/asset-delivery-api/v1/assetId/{asset_id}"));
+    let answered_elsewhere = Cell::new(false);
     let answer = execute_with_retry(|| async {
         let lookup = follow(&client, &url, Some(("x-api-key", api_key))).await?;
+        answered_elsewhere.set(lookup.answered_elsewhere);
         let status = lookup.response.status();
         if lookup.answered_elsewhere && !status.is_success() {
             // Not handed to the retry layer, which would quote the body.
@@ -74,7 +77,18 @@ pub async fn download_asset_from(api_key: &str, asset_id: u64, base: &ApiBase) -
     // it cannot parse quotes the body, and this body holds a signed URL.
     let body = answer.bytes().await.map_err(reqwest::Error::without_url)?;
     let delivery: AssetDeliveryResponse = serde_json::from_slice(&body).map_err(|e| {
-        anyhow!("the delivery API answered asset {asset_id} without a location to download: {e}")
+        if answered_elsewhere.get() {
+            // serde's text can quote values out of the body, and this body
+            // came from a host the lookup was redirected to.
+            anyhow!(
+                "the asset delivery API redirected asset {asset_id} to another host, whose \
+                 answer did not parse as a location to download"
+            )
+        } else {
+            anyhow!(
+                "the delivery API answered asset {asset_id} without a location to download: {e}"
+            )
+        }
     })?;
 
     let cdn = follow(&client, &delivery.location, None)
@@ -187,6 +201,28 @@ mod tests {
             reached.iter().all(|r| r.headers.get("x-api-key").is_none()),
             "the key must not follow the lookup to another origin"
         );
+    }
+
+    /// A 200 from where the lookup was redirected, in a shape this does not
+    /// read, is reported without serde's text, which quotes values out of
+    /// the body.
+    #[tokio::test]
+    async fn an_unreadable_answer_after_the_lookup_left_its_origin_is_not_quoted() {
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"location": 1234567890}"#))
+            .mount(&elsewhere)
+            .await;
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(redirect_to(format!("{}/lookup", elsewhere.uri())))
+            .mount(&api)
+            .await;
+
+        let shown = format!("{:#}", download(&api).await.unwrap_err());
+
+        assert!(shown.contains("did not parse"), "got {shown}");
+        assert!(!shown.contains("1234567890"), "got {shown}");
     }
 
     /// A refusal from where the lookup was redirected is that host's, and
