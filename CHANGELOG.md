@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `api::get_without_credentials` sends a GET with no credential and follows every redirect, to another origin included, for a download from the address an API answered with, such as a CDN. The response that ends the chain comes back whatever its status, and no error it returns names a URL, since a signed one is a working download link.
+
+### Changed
+
+- The clients from `api::build_client` and `api::build_client_with_user_agent` follow a redirect only while it stays on the origin the request was sent to (scheme, host and port). At a redirect to another origin they stop and hand back the 3xx, which the retry layer reports as an `ApiError` with that status. reqwest's default policy, which they used, drops `Authorization` and `Cookie` on a redirect to another host and forwards every other header, so an Open Cloud endpoint that redirected elsewhere would have sent the `x-api-key` with it. A request with no credential that has to follow such a hop, a download from a CDN, goes through `api::get_without_credentials`. `build_client_with_user_agent` falls back to a `build_client` client when its builder fails, not to a client with reqwest's defaults.
+
 ### Fixed
 
 - The `Debug` of `GlobalFlags` shows the API key and the cookie as `Some(<redacted>)` or `None`, so a `{:?}` of the flags in an error or a log no longer prints either credential. The `Debug` of `api::CsrfToken` no longer prints the token it holds.
