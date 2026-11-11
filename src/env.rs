@@ -6,6 +6,7 @@
 //! use it to resolve `--env <name>` (and `--env all`) into a list of
 //! [`EnvTarget`]s, then call the relevant Open Cloud APIs against each target.
 
+use std::fmt;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
@@ -184,7 +185,11 @@ pub fn resolve_cookie(explicit: Option<&str>, no_auto: bool, standing_yes: bool)
 /// Cross-cutting CLI flags. Every flag here is `global = true` so it can be
 /// placed either before or after the subcommand on the command line:
 /// `rbx --env prod shop sync` and `rbx shop sync --env prod` both work.
-#[derive(Args, Debug, Clone)]
+///
+/// Its `Debug` prints the API key and the cookie as `Some(<redacted>)`, so a
+/// `{:?}` of the flags in an error or a log shows whether a credential is set
+/// and never what it is.
+#[derive(Args, Clone)]
 pub struct GlobalFlags {
     /// Open Cloud API key.
     ///
@@ -289,6 +294,34 @@ pub struct GlobalFlags {
     // flag by name rather than silently taking the first.
     #[arg(long = "place-id", global = true)]
     pub place_id: Vec<u64>,
+}
+
+/// Hand-written rather than derived, because the derive prints the API key and
+/// the cookie in full.
+impl fmt::Debug for GlobalFlags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GlobalFlags")
+            .field("api_key", &Redacted(self.api_key.is_some()))
+            .field("cookie", &Redacted(self.cookie.is_some()))
+            .field("no_auto_cookie", &self.no_auto_cookie)
+            .field("auto_cookie", &self.auto_cookie)
+            .field("env", &self.env)
+            .field("place", &self.place)
+            .field("places", &self.places)
+            .field("universe_id", &self.universe_id)
+            .field("place_id", &self.place_id)
+            .finish()
+    }
+}
+
+/// An optional credential as `Debug` shows it: whether there is one, not what
+/// it is.
+struct Redacted(bool);
+
+impl fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.0 { "Some(<redacted>)" } else { "None" })
+    }
 }
 
 impl GlobalFlags {
@@ -660,6 +693,35 @@ mod tests {
         with_studio_cookie(Some("from-studio"), || {
             assert!(both.resolve_cookie().is_none());
         });
+    }
+
+    /// A `{:?}` of the flags says a credential is set and never prints it.
+    #[test]
+    fn debug_shows_neither_the_key_nor_the_cookie() {
+        let set = GlobalFlags {
+            api_key: Some("key-aaaaBBBBccccDDDD".into()),
+            cookie: Some("cookie-aaaaBBBBccccDDDD".into()),
+            env: Some("prod".into()),
+            ..flags()
+        };
+        let shown = format!("{set:?}");
+        assert!(!shown.contains("aaaaBBBBccccDDDD"), "got {shown}");
+        assert!(
+            shown.contains("api_key: Some(<redacted>)"),
+            "whether a key is set still shows: {shown}"
+        );
+        assert!(shown.contains("cookie: Some(<redacted>)"), "got {shown}");
+        assert!(
+            shown.contains("\"prod\""),
+            "the other fields still show: {shown}"
+        );
+
+        let alternate = format!("{set:#?}");
+        assert!(!alternate.contains("aaaaBBBBccccDDDD"), "got {alternate}");
+
+        let unset = format!("{:?}", flags());
+        assert!(unset.contains("api_key: None"), "got {unset}");
+        assert!(unset.contains("cookie: None"), "got {unset}");
     }
 
     #[test]
