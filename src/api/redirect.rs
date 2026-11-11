@@ -27,22 +27,20 @@ const MAX_REDIRECTS: usize = 10;
 /// Follow while the request stays on its origin (scheme, host and port), stop
 /// at the first hop that leaves it.
 ///
-/// One move off the origin is followed: the same host going from http to
-/// https, both on their default port, which is how a site sends a plain
-/// request to its secure address. A hop that leaves https is stopped, even
-/// back to the first origin after such an upgrade.
+/// The same host moving from http to https is a change of origin too, and
+/// stops. reqwest drops the `Cookie` on that hop, as the port changes, so a
+/// cookie request taken through it would be refused as if the session had
+/// expired: the 3xx says what happened instead. Roblox's hosts are https.
 ///
 /// Stopping hands the 3xx to the caller as the response, rather than failing:
 /// the retry layer reports it with its status, and a caller that wants the
 /// next hop can read its `Location`.
 pub(super) fn same_origin() -> Policy {
     Policy::custom(|attempt| {
-        let previous = attempt.previous();
-        let next = attempt.url();
-        let leaves_origin = previous
+        let leaves_origin = attempt
+            .previous()
             .first()
-            .is_none_or(|first| !stays_on_site(first, next))
-            || previous.last().is_some_and(|last| downgrades(last, next));
+            .is_none_or(|first| leaves_origin(first, attempt.url()));
         if leaves_origin {
             attempt.stop()
         } else if attempt.previous().len() > MAX_REDIRECTS {
@@ -100,9 +98,7 @@ pub(super) struct Followed {
 /// this loop and count against nothing.
 ///
 /// The credential goes with a hop only while every hop so far has stayed on
-/// the origin it was given for, and once dropped it stays dropped. The same
-/// host moved from http to https on default ports counts as that origin, as
-/// it does for the shared clients' policy. At most
+/// the origin it was given for, and once dropped it stays dropped. At most
 /// [`MAX_REDIRECTS`] redirects are followed, so at most eleven requests are
 /// sent. A redirect from https to http is refused rather than followed, with
 /// or without a credential: it would put the rest of the chain, and the URL's
@@ -123,7 +119,7 @@ pub(super) async fn follow(
             request = request.header(name, value);
         }
         let response = request.send().await.map_err(reqwest::Error::without_url)?;
-        let answered_elsewhere = !stays_on_site(&first, &url);
+        let answered_elsewhere = leaves_origin(&first, &url);
         let location = response
             .status()
             .is_redirection()
@@ -150,7 +146,7 @@ pub(super) async fn follow(
                 next.scheme()
             );
         }
-        if !stays_on_site(&first, &next) {
+        if leaves_origin(&first, &next) {
             credential = None;
         }
         redirects += 1;
@@ -177,17 +173,10 @@ pub(crate) fn unfollowed(response: &Response) -> String {
     }
 }
 
-/// Whether `to` is where a credential given for `from` may still go: the same
-/// origin, or the same host moved from http to https with both on their
-/// default port.
-fn stays_on_site(from: &Url, to: &Url) -> bool {
-    let upgrade = from.scheme() == "http"
-        && to.scheme() == "https"
-        && from.host_str().is_some()
-        && from.host_str() == to.host_str()
-        && from.port().is_none()
-        && to.port().is_none();
-    from.origin() == to.origin() || upgrade
+/// Whether `to` is on another origin than `from`: scheme, host or port. The
+/// policy stops there, and the hop loop drops the credential.
+fn leaves_origin(from: &Url, to: &Url) -> bool {
+    from.origin() != to.origin()
 }
 
 /// Whether a hop from `from` to `to` leaves https.
@@ -545,20 +534,18 @@ mod tests {
         assert!(followed.answered_elsewhere);
     }
 
-    /// The mock servers speak http only, so the upgrade is asserted on the
-    /// test the policy and the loop apply to every hop.
+    /// The mock servers speak http only, so the scheme is asserted on the
+    /// test the policy and the loop apply to every hop. The same host moving
+    /// to https is another origin: reqwest would drop a cookie on that hop.
     #[test]
-    fn the_same_host_moving_to_https_stays_on_site_and_nothing_else_does() {
+    fn any_change_of_scheme_host_or_port_leaves_the_origin() {
         let url = |s: &str| Url::parse(s).unwrap();
-        let on_site = |from: &str, to: &str| stays_on_site(&url(from), &url(to));
-        assert!(on_site("http://api.test/a", "https://api.test/b"));
-        assert!(on_site("http://api.test:80/a", "https://api.test:443/b"));
-        assert!(on_site("https://api.test/a", "https://api.test/b"));
-        assert!(!on_site("https://api.test/a", "http://api.test/a"));
-        assert!(!on_site("http://api.test/a", "https://other.test/a"));
-        assert!(!on_site("http://api.test:8080/a", "https://api.test/a"));
-        assert!(!on_site("http://api.test/a", "https://api.test:8443/a"));
-        assert!(!on_site("http://api.test/a", "http://api.test:8080/a"));
+        let leaves = |from: &str, to: &str| leaves_origin(&url(from), &url(to));
+        assert!(leaves("http://api.test/a", "https://api.test/a"));
+        assert!(leaves("https://api.test/a", "http://api.test/a"));
+        assert!(leaves("https://api.test/a", "https://other.test/a"));
+        assert!(leaves("https://api.test/a", "https://api.test:8443/a"));
+        assert!(!leaves("https://api.test/a", "https://api.test:443/b?c"));
     }
 
     /// The mock servers speak http only, so the downgrade is asserted on the
