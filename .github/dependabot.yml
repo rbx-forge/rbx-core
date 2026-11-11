@@ -5,9 +5,11 @@ updates:
   # Whether that setting is on or off, the weekly Supply chain run fails when an
   # advisory reaches Cargo.lock.
   #
-  # Minor and patch updates arrive as one grouped PR a week; a major update gets
-  # its own PR, since it is the one that can break the build. The PR limit keeps
-  # a backlog from piling up while nobody is looking.
+  # Only patch updates are grouped, into one PR per ecosystem a week. A minor
+  # or major update gets its own PR: Dependabot calls a 0.x to 0.(x+1) bump
+  # "minor", and for a 0.x crate that is a breaking change, which deserves its
+  # own CI run rather than hiding in a batch. The PR limit keeps a backlog from
+  # piling up while nobody is looking.
   - package-ecosystem: cargo
     directory: /
     schedule:
@@ -15,11 +17,11 @@ updates:
       day: monday
       time: "06:00"
       timezone: Europe/Paris
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 5
     groups:
-      cargo:
+      cargo-patch:
         patterns: ["*"]
-        update-types: [minor, patch]
+        update-types: [patch]
     commit-message:
       prefix: chore
       include: scope
@@ -34,11 +36,11 @@ updates:
       day: monday
       time: "06:00"
       timezone: Europe/Paris
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 5
     groups:
-      actions:
+      actions-patch:
         patterns: ["*"]
-        update-types: [minor, patch]
+        update-types: [patch]
     commit-message:
       prefix: chore
       include: scope
