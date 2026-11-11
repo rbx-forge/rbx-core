@@ -21,6 +21,7 @@
 //! beta-mode experiences, and that body is gone the moment an error is built
 //! from it.
 
+use std::fmt;
 use std::sync::Arc;
 
 use reqwest::{RequestBuilder, Response, StatusCode};
@@ -32,12 +33,21 @@ use tokio::sync::Mutex;
 /// points, and `Arc` because the clients that hold it are cloned into request
 /// closures. Cloning shares the cache, which is the point: the token is
 /// fetched once per session, not once per call.
-#[derive(Debug, Clone, Default)]
+///
+/// Its `Debug` never shows the token: it is bound to the session the cookie
+/// opened, and a derived `Debug` prints what the mutex holds.
+#[derive(Clone, Default)]
 pub struct CsrfToken(Arc<Mutex<Option<String>>>);
 
 impl CsrfToken {
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+impl fmt::Debug for CsrfToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CsrfToken(<redacted>)")
     }
 }
 
@@ -170,6 +180,14 @@ mod tests {
             Some("fresh"),
             "the token is cached for the rest of the session"
         );
+    }
+
+    #[tokio::test]
+    async fn debug_does_not_show_the_token() {
+        let token = CsrfToken::new();
+        *token.0.lock().await = Some("token-aaaaBBBBccccDDDD".into());
+        let shown = format!("{token:?} {token:#?}");
+        assert!(!shown.contains("aaaaBBBBccccDDDD"), "got {shown}");
     }
 
     /// 204 is success. Three of the four implementations this replaces agreed;

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The `Debug` of `GlobalFlags` shows the API key and the cookie as `Some(<redacted>)` or `None`, so a `{:?}` of the flags in an error or a log no longer prints either credential. The `Debug` of `api::CsrfToken` no longer prints the token it holds.
+
 ## [0.1.4] - 2026-11-10
 
 ### Added
