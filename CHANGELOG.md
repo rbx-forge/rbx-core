@@ -15,6 +15,7 @@
 ### Fixed
 
 - The `Debug` of `GlobalFlags` shows the API key and the cookie as `Some(<redacted>)` or `None`, so a `{:?}` of the flags in an error or a log no longer prints either credential. The `Debug` of `api::CsrfToken` no longer prints the token it holds.
+- `api::may_have_landed`, and so `api::unconfirmed`, count a 3xx answer as a write that may have landed: a create that the shared clients' policy stopped at a redirect to another origin gets the caller's advice to check before running it again. A redirect refused as an error by a client's policy (too many of them) still counts as an answer.
 - `api::download_asset` and `api::download_asset_from` check the status of every hop. A CDN that does not answer with a success is an error that gives its status alone, instead of its body returned as the asset: an error page saved as an image and hashed into a lockfile. The download from the CDN carries no key and follows its redirects to another host. No error prints a CDN body, the body of a refusal from wherever the lookup was redirected, or the signed URL the delivery API answered with, including when that answer has no `location` to read.
 
 ## [0.1.4] - 2026-11-10

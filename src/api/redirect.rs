@@ -263,7 +263,7 @@ mod tests {
         let api = MockServer::start().await;
         let elsewhere = MockServer::start().await;
         let target = format!("{}/blob?signature=aaaaBBBBccccDDDD", elsewhere.uri());
-        Mock::given(method("GET"))
+        Mock::given(wiremock::matchers::any())
             .respond_with(
                 redirect_to(&target).set_body_string(format!("Found. Redirecting to {target}")),
             )
@@ -295,6 +295,31 @@ mod tests {
             shown.contains("redirected to 127.0.0.1, which was not followed"),
             "got {shown}"
         );
+    }
+
+    /// A create answered by a redirect to another origin may have gone
+    /// through, so the caller's advice to check before running it again is
+    /// attached.
+    #[tokio::test]
+    async fn a_create_answered_by_a_stopped_redirect_may_have_landed() {
+        let (api, _elsewhere) = redirect_with_a_signed_body().await;
+        let client = build_client();
+        let url = format!("{}/products", api.uri());
+
+        let error = crate::api::execute_create_with_retry_policy(
+            || async { Ok(client.post(&url).header("x-api-key", "k").send().await?) },
+            &crate::api::RetryPolicy::default(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(crate::api::may_have_landed(&error));
+        let told = crate::api::unconfirmed(error, "check the list before running it again");
+        assert!(
+            format!("{told:#}").starts_with("check the list before running it again"),
+            "got {told:#}"
+        );
+        assert_eq!(api.received_requests().await.unwrap().len(), 1, "sent once");
     }
 
     /// The same for a legacy write through the CSRF dance, whose refusal
