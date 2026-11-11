@@ -6,6 +6,7 @@ mod base;
 mod configs;
 mod csrf;
 mod error;
+mod redirect;
 mod retry;
 
 pub use asset::{download_asset, download_asset_from};
@@ -17,6 +18,7 @@ pub use configs::{
 };
 pub use csrf::{send_with_csrf, CsrfError, CsrfToken, Refusal};
 pub use error::{api_status, is_api_status, roblox_error, roblox_message, ApiError};
+pub use redirect::get_without_credentials;
 pub use retry::{
     execute_create_with_retry_policy, execute_json, execute_with_retry, execute_with_retry_policy,
     may_have_landed, unconfirmed, RetryPolicy,
@@ -38,25 +40,37 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// enabled because Open Cloud responses are often large JSON. Timeout caps
 /// any single request at [`DEFAULT_REQUEST_TIMEOUT`] so a hung connection
 /// can't block the binary forever.
+///
+/// The client follows a redirect only while it stays on the origin the
+/// request was sent to (scheme, host and port). A redirect to another origin
+/// is not followed: the caller gets the 3xx response itself, which the retry
+/// layer turns into an [`ApiError`] carrying that status. reqwest's default
+/// policy forwards every header but `Authorization` and `Cookie` to the next
+/// host, `x-api-key` included, and stopping is what keeps a credential on the
+/// origin it was attached for. A request that carries none and needs the hop
+/// goes through [`get_without_credentials`].
 pub fn build_client() -> Client {
     Client::builder()
         .gzip(true)
         .timeout(DEFAULT_REQUEST_TIMEOUT)
+        .redirect(redirect::same_origin())
         .build()
         .expect("reqwest::Client::builder should not fail on standard config")
 }
 
 /// Like [`build_client`] but with a fixed `User-Agent`. Crates that hit the
 /// legacy/web Roblox endpoints (rbx-apikey, rbx-init) set one because some of
-/// those endpoints reject the default reqwest agent. Falls back to a bare
-/// client if the builder ever fails, so a UA quirk can't take the tool down.
+/// those endpoints reject the default reqwest agent. Follows redirects as
+/// [`build_client`] does, and falls back to a [`build_client`] client if the
+/// builder ever fails, so a UA quirk can't take the tool down.
 pub fn build_client_with_user_agent(user_agent: &str) -> Client {
     Client::builder()
         .user_agent(user_agent)
         .gzip(true)
         .timeout(DEFAULT_REQUEST_TIMEOUT)
+        .redirect(redirect::same_origin())
         .build()
-        .unwrap_or_else(|_| Client::new())
+        .unwrap_or_else(|_| build_client())
 }
 
 /// Resolve the `x-api-key` header value from a `GlobalFlags`-style optional
