@@ -149,6 +149,25 @@ pub(super) async fn follow(
     }
 }
 
+/// What an error keeps of a 3xx that was not followed, in place of its body.
+///
+/// The body of a redirect often repeats its target, and a target can be a
+/// signed URL: a working link in whatever log the error lands in. So it is
+/// never read, and the target is named by its host alone. The status stays
+/// with the caller, which reports it beside this.
+pub(crate) fn unfollowed(response: &Response) -> String {
+    let host = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|location| location.to_str().ok())
+        .and_then(|location| response.url().join(location).ok())
+        .and_then(|target| target.host_str().map(str::to_string));
+    match host {
+        Some(host) => format!("redirected to {host}, which was not followed"),
+        None => "redirected, and the redirect was not followed".to_string(),
+    }
+}
+
 /// Whether a hop from `from` to `to` leaves https.
 fn downgrades(from: &Url, to: &Url) -> bool {
     from.scheme() == "https" && to.scheme() != "https"
@@ -216,11 +235,27 @@ mod tests {
         }
     }
 
+    /// A stopped redirect whose body repeats its signed target, as S3 and
+    /// most servers write one.
+    async fn redirect_with_a_signed_body() -> (MockServer, MockServer) {
+        let api = MockServer::start().await;
+        let elsewhere = MockServer::start().await;
+        let target = format!("{}/blob?signature=aaaaBBBBccccDDDD", elsewhere.uri());
+        Mock::given(method("GET"))
+            .respond_with(
+                redirect_to(&target).set_body_string(format!("Found. Redirecting to {target}")),
+            )
+            .mount(&api)
+            .await;
+        (api, elsewhere)
+    }
+
     /// Through the retry layer, the stop is an answer with its status, which a
-    /// caller can branch on like any refusal.
+    /// caller can branch on like any refusal. Its body is not kept: the error
+    /// names the target's host and nothing else of it.
     #[tokio::test]
-    async fn the_retry_layer_reports_a_stopped_redirect_by_its_status() {
-        let (api, _elsewhere) = redirect_elsewhere().await;
+    async fn the_retry_layer_reports_a_stopped_redirect_by_its_status_and_host() {
+        let (api, _elsewhere) = redirect_with_a_signed_body().await;
         let client = build_client();
         let url = format!("{}/moved", api.uri());
 
@@ -231,6 +266,45 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(api_status(&error), Some(StatusCode::FOUND));
+        let shown = format!("{error:#}");
+        assert!(!shown.contains("aaaaBBBBccccDDDD"), "got {shown}");
+        assert!(!shown.contains("/blob"), "got {shown}");
+        assert!(
+            shown.contains("redirected to 127.0.0.1, which was not followed"),
+            "got {shown}"
+        );
+    }
+
+    /// The same for a legacy write through the CSRF dance, whose refusal
+    /// carries the body to its caller.
+    #[tokio::test]
+    async fn a_stopped_redirect_through_the_csrf_dance_keeps_no_body() {
+        let (api, _elsewhere) = redirect_with_a_signed_body().await;
+        let client = build_client();
+        let url = format!("{}/moved", api.uri());
+
+        let error = crate::api::send_with_csrf(&crate::api::CsrfToken::new(), || client.get(&url))
+            .await
+            .unwrap_err();
+
+        let shown = format!("{:#}", anyhow::Error::from(error));
+        assert!(shown.contains("302"), "got {shown}");
+        assert!(!shown.contains("aaaaBBBBccccDDDD"), "got {shown}");
+    }
+
+    /// And for the session check, whose warning quotes what it was answered.
+    #[tokio::test]
+    async fn a_stopped_redirect_on_the_session_check_keeps_no_body() {
+        let (api, _elsewhere) = redirect_with_a_signed_body().await;
+
+        let verdict =
+            crate::session::check_with_host(&build_client(), "a-cookie", &api.uri()).await;
+
+        let crate::session::Session::Unknown(why) = verdict else {
+            panic!("a redirect is no verdict, got {verdict:?}");
+        };
+        assert!(why.contains("302"), "got {why}");
+        assert!(!why.contains("aaaaBBBBccccDDDD"), "got {why}");
     }
 
     /// A redirect on the same origin is followed, key and all, so a moved

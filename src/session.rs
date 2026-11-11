@@ -195,6 +195,12 @@ async fn ask(client: &Client, cookie: &str, host: &str) -> Session {
     if status == StatusCode::UNAUTHORIZED {
         return Session::Refused;
     }
+    if status.is_redirection() {
+        return Session::Unknown(format!(
+            "{host} answered {status}, {}",
+            crate::api::unfollowed(&response)
+        ));
+    }
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
         let detail = roblox_message(&body).unwrap_or_else(|| body.trim().to_string());
