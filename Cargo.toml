@@ -34,7 +34,7 @@ schemars = { version = "0.8", default-features = false, features = ["derive"], o
 rbx_cookie = { version = "0.1", default-features = false }
 blake3 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-bit-vec = "0.8"
+bit-vec = "0.10"
 colored = "2"
 dialoguer = "0.11"
 
