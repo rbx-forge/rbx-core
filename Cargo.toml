@@ -30,7 +30,7 @@ toml = "0.8"
 # Not "full": no tokio::spawn anywhere. `macros` for the test attributes,
 # `time` for retry backoff, `sync` for the cached lookups.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
-schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
+schemars = { version = "1.2", default-features = false, features = ["derive"], optional = true }
 rbx_cookie = { version = "0.1", default-features = false }
 blake3 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
