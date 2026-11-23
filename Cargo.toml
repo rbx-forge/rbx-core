@@ -35,7 +35,7 @@ rbx_cookie = { version = "0.1", default-features = false }
 blake3 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 bit-vec = "0.10"
-colored = "2"
+colored = "3"
 dialoguer = "0.12"
 
 [dev-dependencies]
